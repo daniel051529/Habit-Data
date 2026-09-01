@@ -4,7 +4,7 @@ A lightweight Android habit tracker for recording habits in a yes/no fashion and
 
 ## What it does
 
-- Create multiple habits from the hamburger menu.
+- Create multiple habits from the hamburger menu. (yum)
 - Pick the habit you want to record.
 - Move between months.
 - Switch between light and dark mode from the hamburger menu.
