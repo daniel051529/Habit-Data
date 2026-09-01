@@ -1,6 +1,6 @@
-# Action X
+# Habit Data
 
-A lightweight Android habit tracker with a monthly calendar view.
+A lightweight Android habit tracker for recording habits in a yes/no fashion and viewing personal habit data in a monthly calendar.
 
 ## What it does
 
