@@ -2,7 +2,7 @@
 
 A lightweight Android habit tracker for recording habits in a yes/no fashion and viewing personal habit data in a monthly calendar.
 
-## What it does
+## What it does yoooo
 
 - Create multiple habits from the hamburger menu. (yum)
 - Pick the habit you want to record.
