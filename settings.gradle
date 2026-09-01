@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Days Gone"
+rootProject.name = "Habit Data"
 include ":app"
