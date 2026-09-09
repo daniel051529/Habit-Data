@@ -48,6 +48,8 @@ public class MainActivity extends Activity {
     private static final String DARK_MODE_KEY = "dark_mode";
     private static final String SLEEP_TIME_MINUTES_KEY = "sleep_time_minutes";
     private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
+    private static final String HABIT_TYPE_GOOD = "good";
+    private static final String HABIT_TYPE_BAD = "bad";
     private static final int STATE_EMPTY = 0;
     private static final int STATE_DONE = 1;
     private static final int STATE_MISSED = 2;
@@ -78,7 +80,9 @@ public class MainActivity extends Activity {
     private Button habitEmojiButton;
     private GridLayout calendarGrid;
     private LinearLayout bottomPanel;
-    private LinearLayout bottomHabitList;
+    private LinearLayout bottomPanelContent;
+    private LinearLayout goodHabitList;
+    private LinearLayout badHabitList;
     private TextView sleepCountdownValue;
     private FrameLayout drawerLayer;
     private LinearLayout drawerContent;
@@ -100,7 +104,7 @@ public class MainActivity extends Activity {
 
         loadHabits();
         if (habits.isEmpty()) {
-            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", new JSONObject(), new JSONObject()));
+            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, new JSONObject(), new JSONObject()));
             selectedHabitId = habits.get(0).id;
             saveHabits();
         }
@@ -191,15 +195,15 @@ public class MainActivity extends Activity {
         bottomPanel.setPadding(dp(20), dp(14), dp(20), dp(18));
         page.addView(bottomPanel, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        HorizontalScrollView habitScroller = new HorizontalScrollView(this);
-        habitScroller.setHorizontalScrollBarEnabled(false);
-        habitScroller.setFillViewport(false);
+        ScrollView bottomScroller = new ScrollView(this);
+        bottomScroller.setVerticalScrollBarEnabled(false);
+        bottomPanelContent = new LinearLayout(this);
+        bottomPanelContent.setOrientation(LinearLayout.VERTICAL);
+        bottomScroller.addView(bottomPanelContent, new ScrollView.LayoutParams(-1, -2));
+        bottomPanel.addView(bottomScroller, new LinearLayout.LayoutParams(-1, -1));
 
-        bottomHabitList = new LinearLayout(this);
-        bottomHabitList.setOrientation(LinearLayout.HORIZONTAL);
-        bottomHabitList.setGravity(Gravity.CENTER_VERTICAL);
-        habitScroller.addView(bottomHabitList, new HorizontalScrollView.LayoutParams(-2, -1));
-        bottomPanel.addView(habitScroller, new LinearLayout.LayoutParams(-1, dp(82)));
+        goodHabitList = addHabitTypeSection(bottomPanelContent, "Good Habits");
+        badHabitList = addHabitTypeSection(bottomPanelContent, "Bad Habits");
 
         buildDrawer();
         installInsetPanels();
@@ -234,6 +238,31 @@ public class MainActivity extends Activity {
         topBar.addView(sleepCountdownValue, new LinearLayout.LayoutParams(dp(72), dp(52)));
 
         return topBar;
+    }
+
+    private LinearLayout addHabitTypeSection(LinearLayout parent, String titleText) {
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextColor(mutedTextColor());
+        title.setTextSize(12);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, dp(24));
+        parent.addView(title, titleParams);
+
+        HorizontalScrollView habitScroller = new HorizontalScrollView(this);
+        habitScroller.setHorizontalScrollBarEnabled(false);
+        habitScroller.setFillViewport(false);
+
+        LinearLayout habitRow = new LinearLayout(this);
+        habitRow.setOrientation(LinearLayout.HORIZONTAL);
+        habitRow.setGravity(Gravity.CENTER_VERTICAL);
+        habitScroller.addView(habitRow, new HorizontalScrollView.LayoutParams(-2, -1));
+
+        LinearLayout.LayoutParams scrollerParams = new LinearLayout.LayoutParams(-1, dp(66));
+        scrollerParams.setMargins(0, 0, 0, dp(8));
+        parent.addView(habitScroller, scrollerParams);
+        return habitRow;
     }
 
     @Override
@@ -498,42 +527,73 @@ public class MainActivity extends Activity {
     }
 
     private void renderBottomHabitSelector() {
-        bottomHabitList.removeAllViews();
+        goodHabitList.removeAllViews();
+        badHabitList.removeAllViews();
+        int goodCount = 0;
+        int badCount = 0;
         for (Habit habit : habits) {
-            LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.HORIZONTAL);
-            card.setGravity(Gravity.CENTER_VERTICAL);
-            card.setPadding(dp(14), dp(8), dp(14), dp(8));
-            applyHabitSelectorStyle(card, habit.id.equals(selectedHabitId));
-
-            TextView emoji = new TextView(this);
-            emoji.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
-            emoji.setTextSize(20);
-            emoji.setGravity(Gravity.CENTER);
-            emoji.setTextColor(textColor());
-            card.addView(emoji, new LinearLayout.LayoutParams(dp(28), -1));
-
-            TextView name = new TextView(this);
-            name.setText(habit.name);
-            name.setTextColor(textColor());
-            name.setTextSize(16);
-            name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            name.setGravity(Gravity.CENTER_VERTICAL);
-            name.setSingleLine(true);
-            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(-2, -1);
-            nameParams.setMargins(dp(8), 0, 0, 0);
-            card.addView(name, nameParams);
-
-            card.setOnClickListener(v -> {
-                selectedHabitId = habit.id;
-                prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
-                renderAll();
-            });
-
-            LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-2, dp(58));
-            cardParams.setMargins(0, dp(8), dp(10), dp(8));
-            bottomHabitList.addView(card, cardParams);
+            LinearLayout list = HABIT_TYPE_BAD.equals(habit.type) ? badHabitList : goodHabitList;
+            list.addView(buildHabitSelectorCard(habit), habitSelectorCardParams());
+            if (HABIT_TYPE_BAD.equals(habit.type)) {
+                badCount++;
+            } else {
+                goodCount++;
+            }
         }
+        if (goodCount == 0) {
+            goodHabitList.addView(emptyHabitTypeLabel("No good habits yet"), habitSelectorCardParams());
+        }
+        if (badCount == 0) {
+            badHabitList.addView(emptyHabitTypeLabel("No bad habits yet"), habitSelectorCardParams());
+        }
+    }
+
+    private View buildHabitSelectorCard(Habit habit) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(14), dp(8), dp(14), dp(8));
+        applyHabitSelectorStyle(card, habit);
+
+        TextView emoji = new TextView(this);
+        emoji.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
+        emoji.setTextSize(20);
+        emoji.setGravity(Gravity.CENTER);
+        emoji.setTextColor(textColor());
+        card.addView(emoji, new LinearLayout.LayoutParams(dp(28), -1));
+
+        TextView name = new TextView(this);
+        name.setText(habit.name);
+        name.setTextColor(textColor());
+        name.setTextSize(16);
+        name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        name.setGravity(Gravity.CENTER_VERTICAL);
+        name.setSingleLine(true);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(-2, -1);
+        nameParams.setMargins(dp(8), 0, 0, 0);
+        card.addView(name, nameParams);
+
+        card.setOnClickListener(v -> {
+            selectedHabitId = habit.id;
+            prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
+            renderAll();
+        });
+        return card;
+    }
+
+    private View emptyHabitTypeLabel(String text) {
+        TextView label = new TextView(this);
+        label.setText(text);
+        label.setTextColor(mutedTextColor());
+        label.setTextSize(14);
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        return label;
+    }
+
+    private LinearLayout.LayoutParams habitSelectorCardParams() {
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-2, dp(50));
+        cardParams.setMargins(0, dp(4), dp(10), dp(8));
+        return cardParams;
     }
 
     private void cycleDay(Habit habit, String dateKey) {
@@ -605,11 +665,20 @@ public class MainActivity extends Activity {
     private void showHabitMenu(View anchor, Habit habit) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add("Rename");
+        menu.getMenu().add(HABIT_TYPE_BAD.equals(habit.type) ? "Make Good Habit" : "Make Bad Habit");
         menu.getMenu().add("Delete");
         menu.setOnMenuItemClickListener(item -> {
             String title = item.getTitle().toString();
             if ("Rename".equals(title)) {
                 showRenameDialog(habit);
+            } else if ("Make Good Habit".equals(title)) {
+                habit.type = HABIT_TYPE_GOOD;
+                saveHabits();
+                renderAll();
+            } else if ("Make Bad Habit".equals(title)) {
+                habit.type = HABIT_TYPE_BAD;
+                saveHabits();
+                renderAll();
             } else if ("Delete".equals(title)) {
                 confirmDelete(habit);
             }
@@ -660,7 +729,7 @@ public class MainActivity extends Activity {
                         Toast.makeText(this, "Name the habit first", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", new JSONObject(), new JSONObject());
+                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", HABIT_TYPE_GOOD, new JSONObject(), new JSONObject());
                     habits.add(habit);
                     selectedHabitId = habit.id;
                     prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
@@ -742,11 +811,13 @@ public class MainActivity extends Activity {
         habitEmojiButton.setTextColor(textColor());
     }
 
-    private void applyHabitSelectorStyle(View view, boolean selected) {
+    private void applyHabitSelectorStyle(View view, Habit habit) {
+        boolean selected = habit.id.equals(selectedHabitId);
+        boolean badHabit = HABIT_TYPE_BAD.equals(habit.type);
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
-        drawable.setColor(selected ? selectedRowColor() : panelColor());
+        drawable.setColor(selected ? selectedHabitTypeColor(badHabit) : panelColor());
         drawable.setCornerRadius(dp(18));
-        drawable.setStroke(dp(1), selected ? accentColor() : borderColor());
+        drawable.setStroke(dp(1), selected ? habitTypeAccentColor(badHabit) : habitTypeBorderColor(badHabit));
         view.setBackground(drawable);
     }
 
@@ -936,6 +1007,27 @@ public class MainActivity extends Activity {
         return isDarkMode ? Color.rgb(45, 212, 191) : Color.rgb(15, 118, 110);
     }
 
+    private int selectedHabitTypeColor(boolean badHabit) {
+        if (badHabit) {
+            return isDarkMode ? Color.rgb(127, 29, 29) : Color.rgb(254, 226, 226);
+        }
+        return selectedRowColor();
+    }
+
+    private int habitTypeAccentColor(boolean badHabit) {
+        if (badHabit) {
+            return isDarkMode ? Color.rgb(248, 113, 113) : Color.rgb(220, 38, 38);
+        }
+        return accentColor();
+    }
+
+    private int habitTypeBorderColor(boolean badHabit) {
+        if (badHabit) {
+            return isDarkMode ? Color.rgb(127, 29, 29) : Color.rgb(254, 202, 202);
+        }
+        return borderColor();
+    }
+
     private void applySystemBarTheme() {
         getWindow().setStatusBarColor(surfaceColor());
         getWindow().setNavigationBarColor(panelColor());
@@ -949,6 +1041,10 @@ public class MainActivity extends Activity {
             }
         }
         return null;
+    }
+
+    private String normalizedHabitType(String type) {
+        return HABIT_TYPE_BAD.equals(type) ? HABIT_TYPE_BAD : HABIT_TYPE_GOOD;
     }
 
     private int startColumn(DayOfWeek dayOfWeek) {
@@ -970,6 +1066,7 @@ public class MainActivity extends Activity {
                         item.getString("id"),
                         item.getString("name"),
                         item.optString("emoji", ""),
+                        normalizedHabitType(item.optString("type", HABIT_TYPE_GOOD)),
                         item.optJSONObject("states") == null ? new JSONObject() : item.optJSONObject("states"),
                         item.optJSONObject("notes") == null ? new JSONObject() : item.optJSONObject("notes")
                 ));
@@ -987,6 +1084,7 @@ public class MainActivity extends Activity {
                 item.put("id", habit.id);
                 item.put("name", habit.name);
                 item.put("emoji", habit.emoji);
+                item.put("type", habit.type);
                 item.put("states", habit.states);
                 item.put("notes", habit.notes);
                 array.put(item);
@@ -1004,13 +1102,15 @@ public class MainActivity extends Activity {
         final String id;
         String name;
         String emoji;
+        String type;
         final JSONObject states;
         final JSONObject notes;
 
-        Habit(String id, String name, String emoji, JSONObject states, JSONObject notes) {
+        Habit(String id, String name, String emoji, String type, JSONObject states, JSONObject notes) {
             this.id = id;
             this.name = name;
             this.emoji = emoji;
+            this.type = type;
             this.states = states;
             this.notes = notes;
         }
