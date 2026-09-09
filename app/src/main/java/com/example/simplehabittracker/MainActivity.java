@@ -2,11 +2,14 @@ package com.example.simplehabittracker;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.TimePickerDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.os.Handler;
 import android.os.Bundle;
+import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -28,7 +31,10 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.time.DayOfWeek;
+import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -40,17 +46,29 @@ public class MainActivity extends Activity {
     private static final String HABITS_KEY = "habits";
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
+    private static final String SLEEP_TIME_MINUTES_KEY = "sleep_time_minutes";
+    private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
     private static final int STATE_EMPTY = 0;
     private static final int STATE_DONE = 1;
     private static final int STATE_MISSED = 2;
 
     private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH);
+    private final DateTimeFormatter sleepTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
     private final List<Habit> habits = new ArrayList<>();
+    private final Handler countdownHandler = new Handler(Looper.getMainLooper());
+    private final Runnable countdownTicker = new Runnable() {
+        @Override
+        public void run() {
+            renderSleepCountdown();
+            countdownHandler.postDelayed(this, 1000);
+        }
+    };
 
     private SharedPreferences prefs;
     private YearMonth visibleMonth;
     private String selectedHabitId;
     private boolean isDarkMode;
+    private int sleepTimeMinutes;
 
     private FrameLayout root;
     private LinearLayout page;
@@ -61,6 +79,7 @@ public class MainActivity extends Activity {
     private GridLayout calendarGrid;
     private LinearLayout bottomPanel;
     private LinearLayout bottomHabitList;
+    private TextView sleepCountdownValue;
     private FrameLayout drawerLayer;
     private LinearLayout drawerContent;
     private LinearLayout habitList;
@@ -77,6 +96,7 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         visibleMonth = YearMonth.now();
         isDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
+        sleepTimeMinutes = prefs.getInt(SLEEP_TIME_MINUTES_KEY, DEFAULT_SLEEP_TIME_MINUTES);
 
         loadHabits();
         if (habits.isEmpty()) {
@@ -92,6 +112,19 @@ public class MainActivity extends Activity {
 
         buildUi();
         renderAll();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        countdownHandler.removeCallbacks(countdownTicker);
+        countdownTicker.run();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        countdownHandler.removeCallbacks(countdownTicker);
     }
 
     private void buildUi() {
@@ -190,6 +223,15 @@ public class MainActivity extends Activity {
         monthTitle.setTypeface(Typeface.DEFAULT_BOLD);
         monthTitle.setGravity(Gravity.CENTER);
         topBar.addView(monthTitle, new LinearLayout.LayoutParams(0, -1, 1));
+
+        sleepCountdownValue = new TextView(this);
+        sleepCountdownValue.setTextColor(accentColor());
+        sleepCountdownValue.setTextSize(13);
+        sleepCountdownValue.setTypeface(Typeface.DEFAULT_BOLD);
+        sleepCountdownValue.setGravity(Gravity.CENTER);
+        sleepCountdownValue.setSingleLine(true);
+        sleepCountdownValue.setOnClickListener(v -> showSleepTimeDialog());
+        topBar.addView(sleepCountdownValue, new LinearLayout.LayoutParams(dp(72), dp(52)));
 
         return topBar;
     }
@@ -338,6 +380,29 @@ public class MainActivity extends Activity {
         renderDrawerList();
         renderBottomHabitSelector();
         renderCalendar();
+        renderSleepCountdown();
+    }
+
+    private void renderSleepCountdown() {
+        if (sleepCountdownValue == null) {
+            return;
+        }
+
+        LocalTime sleepTime = LocalTime.of(sleepTimeMinutes / 60, sleepTimeMinutes % 60);
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime target = now.toLocalDate().atTime(sleepTime);
+        if (!target.isAfter(now)) {
+            target = target.plusDays(1);
+        }
+
+        Duration remaining = Duration.between(now, target);
+        long totalSeconds = Math.max(0, remaining.getSeconds());
+        long hours = totalSeconds / 3600;
+        long minutes = (totalSeconds % 3600) / 60;
+        long seconds = totalSeconds % 60;
+
+        sleepCountdownValue.setText(String.format(Locale.ENGLISH, "%02d:%02d:%02d", hours, minutes, seconds));
+        sleepCountdownValue.setContentDescription("Time until sleep at " + sleepTime.format(sleepTimeFormatter));
     }
 
     private void renderCalendar() {
@@ -636,6 +701,24 @@ public class MainActivity extends Activity {
                     renderCalendar();
                 })
                 .show();
+    }
+
+    private void showSleepTimeDialog() {
+        int hour = sleepTimeMinutes / 60;
+        int minute = sleepTimeMinutes % 60;
+        TimePickerDialog dialog = new TimePickerDialog(
+                this,
+                (view, selectedHour, selectedMinute) -> {
+                    sleepTimeMinutes = selectedHour * 60 + selectedMinute;
+                    prefs.edit().putInt(SLEEP_TIME_MINUTES_KEY, sleepTimeMinutes).apply();
+                    renderSleepCountdown();
+                },
+                hour,
+                minute,
+                false
+        );
+        dialog.setTitle("Sleep time");
+        dialog.show();
     }
 
     private String firstEmojiLikeText(String value) {
