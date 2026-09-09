@@ -1,7 +1,6 @@
 # Habit Data
 
 A lightweight Android habit tracker for recording habits in a yes/no fashion and viewing personal habit data in a monthly calendar.
-TEST LINE
 
 ## What it does
 
