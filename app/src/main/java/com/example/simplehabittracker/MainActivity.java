@@ -5,7 +5,9 @@ import android.app.AlertDialog;
 import android.app.TimePickerDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Bundle;
@@ -13,6 +15,7 @@ import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -38,12 +41,15 @@ import java.time.LocalTime;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 public class MainActivity extends Activity {
     private static final String PREFS_NAME = "habit_tracker_data";
     private static final String HABITS_KEY = "habits";
+    private static final String FOLDERS_KEY = "folders";
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
     private static final String SLEEP_TIME_MINUTES_KEY = "sleep_time_minutes";
@@ -57,6 +63,12 @@ public class MainActivity extends Activity {
     private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH);
     private final DateTimeFormatter sleepTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
     private final List<Habit> habits = new ArrayList<>();
+    private final List<HabitFolder> folders = new ArrayList<>();
+    private final Map<String, HorizontalScrollView> bottomFolderScrollers = new HashMap<>();
+    private final Map<String, View> bottomHabitCards = new HashMap<>();
+    private final Map<String, TextView> bottomHabitNames = new HashMap<>();
+    private final Map<String, LinearLayout> drawerHabitRows = new HashMap<>();
+    private final Map<String, TextView> drawerHabitNames = new HashMap<>();
     private final Handler countdownHandler = new Handler(Looper.getMainLooper());
     private final Runnable countdownTicker = new Runnable() {
         @Override
@@ -78,17 +90,20 @@ public class MainActivity extends Activity {
     private TextView monthTitle;
     private TextView habitTitle;
     private Button habitEmojiButton;
+    private FrameLayout calendarContainer;
     private GridLayout calendarGrid;
+    private GridLayout monthPreviewGrid;
+    private YearMonth monthPreview;
+    private int monthPreviewDirection;
     private LinearLayout bottomPanel;
     private LinearLayout bottomPanelContent;
-    private LinearLayout goodHabitList;
-    private LinearLayout badHabitList;
     private TextView sleepCountdownValue;
     private FrameLayout drawerLayer;
     private LinearLayout drawerContent;
     private LinearLayout habitList;
     private float monthSwipeStartX;
     private float monthSwipeStartY;
+    private VelocityTracker monthVelocityTracker;
     private boolean monthSwipeInProgress;
     private boolean isMonthAnimating;
     private boolean isDrawerAnimating;
@@ -102,6 +117,7 @@ public class MainActivity extends Activity {
         isDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
         sleepTimeMinutes = prefs.getInt(SLEEP_TIME_MINUTES_KEY, DEFAULT_SLEEP_TIME_MINUTES);
 
+        loadFolders();
         loadHabits();
         if (habits.isEmpty()) {
             habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, new JSONObject(), new JSONObject()));
@@ -177,11 +193,11 @@ public class MainActivity extends Activity {
 
         page.addView(buildWeekdayHeader(), new LinearLayout.LayoutParams(-1, dp(34)));
 
-        calendarGrid = new GridLayout(this);
-        calendarGrid.setColumnCount(7);
-        calendarGrid.setRowCount(6);
-        calendarGrid.setPadding(dp(12), dp(8), dp(12), dp(12));
-        page.addView(calendarGrid, new LinearLayout.LayoutParams(-1, -2));
+        calendarContainer = new FrameLayout(this);
+        calendarContainer.setClipChildren(true);
+        calendarGrid = createCalendarGrid();
+        calendarContainer.addView(calendarGrid, new FrameLayout.LayoutParams(-1, -1));
+        page.addView(calendarContainer, new LinearLayout.LayoutParams(-1, dp(380)));
 
         View gridBottomDivider = new View(this);
         gridBottomDivider.setBackgroundColor(borderColor());
@@ -202,9 +218,6 @@ public class MainActivity extends Activity {
         bottomScroller.addView(bottomPanelContent, new ScrollView.LayoutParams(-1, -2));
         bottomPanel.addView(bottomScroller, new LinearLayout.LayoutParams(-1, -1));
 
-        goodHabitList = addHabitTypeSection(bottomPanelContent, "Good Habits");
-        badHabitList = addHabitTypeSection(bottomPanelContent, "Bad Habits");
-
         buildDrawer();
         installInsetPanels();
         setContentView(root);
@@ -222,8 +235,8 @@ public class MainActivity extends Activity {
         topBar.addView(menuButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
 
         monthTitle = new TextView(this);
-        monthTitle.setTextColor(textColor());
-        monthTitle.setTextSize(20);
+        monthTitle.setTextColor(mutedTextColor());
+        monthTitle.setTextSize(16);
         monthTitle.setTypeface(Typeface.DEFAULT_BOLD);
         monthTitle.setGravity(Gravity.CENTER);
         topBar.addView(monthTitle, new LinearLayout.LayoutParams(0, -1, 1));
@@ -274,35 +287,49 @@ public class MainActivity extends Activity {
 
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                recycleMonthVelocityTracker();
+                monthVelocityTracker = VelocityTracker.obtain();
+                monthVelocityTracker.addMovement(event);
                 monthSwipeStartX = event.getRawX();
                 monthSwipeStartY = event.getRawY();
                 monthSwipeInProgress = false;
                 touchStartedInBottomPanel = isTouchInsideView(bottomPanel, event);
                 break;
             case MotionEvent.ACTION_MOVE:
+                monthVelocityTracker.addMovement(event);
                 if (touchStartedInBottomPanel) {
                     return super.dispatchTouchEvent(event);
                 }
-                if (isMonthSwipe(event)) {
+                if (monthSwipeInProgress || isMonthDrag(event)) {
                     monthSwipeInProgress = true;
+                    updateMonthDrag(event.getRawX() - monthSwipeStartX);
                     return true;
                 }
                 break;
             case MotionEvent.ACTION_UP:
+                monthVelocityTracker.addMovement(event);
                 if (touchStartedInBottomPanel) {
                     touchStartedInBottomPanel = false;
+                    recycleMonthVelocityTracker();
                     return super.dispatchTouchEvent(event);
                 }
-                if (monthSwipeInProgress || isMonthSwipe(event)) {
+                if (monthSwipeInProgress) {
                     float deltaX = event.getRawX() - monthSwipeStartX;
-                    animateMonthChange(deltaX < 0 ? 1 : -1);
+                    monthVelocityTracker.computeCurrentVelocity(1000);
+                    finishMonthDrag(deltaX, monthVelocityTracker.getXVelocity());
+                    recycleMonthVelocityTracker();
                     monthSwipeInProgress = false;
                     return true;
                 }
+                recycleMonthVelocityTracker();
                 break;
             case MotionEvent.ACTION_CANCEL:
                 touchStartedInBottomPanel = false;
+                if (monthSwipeInProgress) {
+                    finishMonthDrag(0, 0);
+                }
                 monthSwipeInProgress = false;
+                recycleMonthVelocityTracker();
                 break;
             default:
                 break;
@@ -384,7 +411,7 @@ public class MainActivity extends Activity {
 
         Button addButton = primaryButton("+");
         addButton.setTextSize(20);
-        addButton.setOnClickListener(v -> showAddHabitDialog());
+        addButton.setOnClickListener(v -> showCreateMenu(addButton));
         titleRow.addView(addButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
         drawerContent.addView(titleRow, new LinearLayout.LayoutParams(-1, dp(54)));
 
@@ -444,15 +471,27 @@ public class MainActivity extends Activity {
         habitTitle.setText(habit.name);
         habitEmojiButton.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
         applyEmojiButtonStyle();
-        calendarGrid.removeAllViews();
+        populateCalendarGrid(calendarGrid, visibleMonth, habit, true);
+    }
 
-        int startColumn = startColumn(visibleMonth.atDay(1).getDayOfWeek());
-        int daysInMonth = visibleMonth.lengthOfMonth();
+    private GridLayout createCalendarGrid() {
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(7);
+        grid.setRowCount(6);
+        grid.setPadding(dp(12), dp(8), dp(12), dp(12));
+        return grid;
+    }
+
+    private void populateCalendarGrid(GridLayout grid, YearMonth month, Habit habit, boolean interactive) {
+        grid.removeAllViews();
+
+        int startColumn = startColumn(month.atDay(1).getDayOfWeek());
+        int daysInMonth = month.lengthOfMonth();
         int totalCells = 42;
 
         for (int cell = 0; cell < totalCells; cell++) {
             int dayNumber = cell - startColumn + 1;
-            TextView dayView = new TextView(this);
+            DayTextView dayView = new DayTextView(this);
             dayView.setGravity(Gravity.CENTER);
             dayView.setTextSize(16);
             dayView.setTypeface(Typeface.DEFAULT_BOLD);
@@ -465,51 +504,53 @@ public class MainActivity extends Activity {
             params.setMargins(dp(4), dp(4), dp(4), dp(4));
 
             if (dayNumber >= 1 && dayNumber <= daysInMonth) {
-                LocalDate date = visibleMonth.atDay(dayNumber);
+                LocalDate date = month.atDay(dayNumber);
                 String dateKey = date.toString();
                 int state = habit.states.optInt(dateKey, STATE_EMPTY);
                 dayView.setText(String.valueOf(dayNumber));
                 applyDayStyle(dayView, state, date.equals(LocalDate.now()));
-                dayView.setOnClickListener(v -> {
-                    cycleDay(habit, dateKey);
-                    saveHabits();
-                    renderCalendar();
-                });
+                dayView.setShowUnrecordedSlash(state == STATE_EMPTY && date.isBefore(LocalDate.now()));
+                if (interactive) {
+                    dayView.setOnClickListener(v -> {
+                        cycleDay(habit, dateKey);
+                        saveHabits();
+                        renderCalendar();
+                    });
+                }
             } else {
                 dayView.setText("");
                 dayView.setBackgroundColor(Color.TRANSPARENT);
             }
 
-            calendarGrid.addView(dayView, params);
+            grid.addView(dayView, params);
         }
     }
 
     private void renderDrawerList() {
         habitList.removeAllViews();
+        drawerHabitRows.clear();
+        drawerHabitNames.clear();
 
-        addDrawerSectionHeading("Good Habits");
-        for (Habit habit : habits) {
-            if (!HABIT_TYPE_BAD.equals(habit.type)) {
-                addDrawerHabitRow(habit);
-            }
-        }
-
-        addDrawerSectionHeading("Bad Habits");
-        for (Habit habit : habits) {
-            if (HABIT_TYPE_BAD.equals(habit.type)) {
-                addDrawerHabitRow(habit);
+        for (HabitFolder folder : folders) {
+            addDrawerSectionHeading(folder);
+            for (Habit habit : habits) {
+                if (folder.id.equals(habit.type)) {
+                    addDrawerHabitRow(habit);
+                }
             }
         }
     }
 
-    private void addDrawerSectionHeading(String text) {
+    private void addDrawerSectionHeading(HabitFolder folder) {
         TextView heading = new TextView(this);
-        heading.setText(text);
+        heading.setText(folder.name);
         heading.setTextColor(mutedTextColor());
         heading.setTextSize(12);
         heading.setTypeface(Typeface.DEFAULT_BOLD);
         heading.setGravity(Gravity.CENTER);
-        heading.setPadding(dp(12), 0, dp(12), 0);
+        heading.setContentDescription(folder.name + " folder options");
+        heading.setOnClickListener(v -> showFolderMenu(heading, folder));
+
         LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(-1, dp(28));
         headingParams.setMargins(0, dp(5), 0, 0);
         habitList.addView(heading, headingParams);
@@ -526,15 +567,7 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(12), dp(2), dp(4), dp(2));
-        if (habit.id.equals(selectedHabitId)) {
-            boolean badHabit = HABIT_TYPE_BAD.equals(habit.type);
-            android.graphics.drawable.GradientDrawable selectedBackground = new android.graphics.drawable.GradientDrawable();
-            selectedBackground.setColor(selectedHabitTypeColor(badHabit));
-            selectedBackground.setCornerRadius(dp(14));
-            row.setBackground(selectedBackground);
-        } else {
-            row.setBackgroundColor(Color.TRANSPARENT);
-        }
+        applyDrawerHabitRowStyle(row, habit);
 
         TextView name = new TextView(this);
         name.setText(habit.emoji.isEmpty() ? habit.name : habit.emoji + "  " + habit.name);
@@ -544,6 +577,9 @@ public class MainActivity extends Activity {
         name.setGravity(Gravity.CENTER_VERTICAL);
         row.addView(name, new LinearLayout.LayoutParams(0, -1, 1));
 
+        drawerHabitRows.put(habit.id, row);
+        drawerHabitNames.put(habit.id, name);
+
         Button options = iconButton("⋮");
         options.setTextSize(22);
         options.setOnClickListener(v -> showHabitMenu(options, habit));
@@ -552,8 +588,9 @@ public class MainActivity extends Activity {
         row.setOnClickListener(v -> {
             selectedHabitId = habit.id;
             prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
-            hideDrawer();
-            renderAll();
+            renderCalendar();
+            updateBottomHabitSelection();
+            updateDrawerHabitSelection();
         });
 
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(48));
@@ -562,24 +599,34 @@ public class MainActivity extends Activity {
     }
 
     private void renderBottomHabitSelector() {
-        goodHabitList.removeAllViews();
-        badHabitList.removeAllViews();
-        int goodCount = 0;
-        int badCount = 0;
-        for (Habit habit : habits) {
-            LinearLayout list = HABIT_TYPE_BAD.equals(habit.type) ? badHabitList : goodHabitList;
-            list.addView(buildHabitSelectorCard(habit), habitSelectorCardParams());
-            if (HABIT_TYPE_BAD.equals(habit.type)) {
-                badCount++;
-            } else {
-                goodCount++;
+        Map<String, Integer> savedScrollPositions = new HashMap<>();
+        for (Map.Entry<String, HorizontalScrollView> entry : bottomFolderScrollers.entrySet()) {
+            savedScrollPositions.put(entry.getKey(), entry.getValue().getScrollX());
+        }
+
+        bottomFolderScrollers.clear();
+        bottomHabitCards.clear();
+        bottomHabitNames.clear();
+        bottomPanelContent.removeAllViews();
+        for (HabitFolder folder : folders) {
+            LinearLayout folderHabitList = addHabitTypeSection(bottomPanelContent, folder.name);
+            HorizontalScrollView folderScroller = (HorizontalScrollView) folderHabitList.getParent();
+            bottomFolderScrollers.put(folder.id, folderScroller);
+            int count = 0;
+            for (Habit habit : habits) {
+                if (folder.id.equals(habit.type)) {
+                    folderHabitList.addView(buildHabitSelectorCard(habit), habitSelectorCardParams());
+                    count++;
+                }
             }
-        }
-        if (goodCount == 0) {
-            goodHabitList.addView(emptyHabitTypeLabel("No good habits yet"), habitSelectorCardParams());
-        }
-        if (badCount == 0) {
-            badHabitList.addView(emptyHabitTypeLabel("No bad habits yet"), habitSelectorCardParams());
+            if (count == 0) {
+                folderHabitList.addView(emptyHabitTypeLabel("No habits yet"), habitSelectorCardParams());
+            }
+
+            int savedScrollX = savedScrollPositions.containsKey(folder.id)
+                    ? savedScrollPositions.get(folder.id)
+                    : 0;
+            folderScroller.post(() -> folderScroller.scrollTo(savedScrollX, 0));
         }
     }
 
@@ -608,12 +655,55 @@ public class MainActivity extends Activity {
         nameParams.setMargins(dp(8), 0, 0, 0);
         card.addView(name, nameParams);
 
+        bottomHabitCards.put(habit.id, card);
+        bottomHabitNames.put(habit.id, name);
+
         card.setOnClickListener(v -> {
             selectedHabitId = habit.id;
             prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
-            renderAll();
+            renderCalendar();
+            updateBottomHabitSelection();
+            updateDrawerHabitSelection();
         });
         return card;
+    }
+
+    private void updateBottomHabitSelection() {
+        for (Habit habit : habits) {
+            View card = bottomHabitCards.get(habit.id);
+            TextView name = bottomHabitNames.get(habit.id);
+            if (card != null) {
+                applyHabitSelectorStyle(card, habit);
+            }
+            if (name != null) {
+                name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            }
+        }
+    }
+
+    private void updateDrawerHabitSelection() {
+        for (Habit habit : habits) {
+            LinearLayout row = drawerHabitRows.get(habit.id);
+            TextView name = drawerHabitNames.get(habit.id);
+            if (row != null) {
+                applyDrawerHabitRowStyle(row, habit);
+            }
+            if (name != null) {
+                name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            }
+        }
+    }
+
+    private void applyDrawerHabitRowStyle(View row, Habit habit) {
+        if (!habit.id.equals(selectedHabitId)) {
+            row.setBackgroundColor(Color.TRANSPARENT);
+            return;
+        }
+        boolean badHabit = HABIT_TYPE_BAD.equals(habit.type);
+        android.graphics.drawable.GradientDrawable selectedBackground = new android.graphics.drawable.GradientDrawable();
+        selectedBackground.setColor(selectedHabitTypeColor(badHabit));
+        selectedBackground.setCornerRadius(dp(14));
+        row.setBackground(selectedBackground);
     }
 
     private View emptyHabitTypeLabel(String text) {
@@ -652,74 +742,292 @@ public class MainActivity extends Activity {
         return wrapper;
     }
 
-    private void animateMonthChange(int direction) {
-        if (isMonthAnimating) {
-            return;
-        }
-        isMonthAnimating = true;
-        int width = calendarGrid.getWidth();
+    private void updateMonthDrag(float requestedDeltaX) {
+        int width = calendarContainer.getWidth();
         if (width == 0) {
-            visibleMonth = direction > 0 ? visibleMonth.plusMonths(1) : visibleMonth.minusMonths(1);
-            renderCalendar();
-            isMonthAnimating = false;
             return;
         }
+        float deltaX = Math.max(-width, Math.min(width, requestedDeltaX));
+        int direction = deltaX < 0 ? 1 : -1;
+        prepareMonthPreview(direction);
+        calendarGrid.setTranslationX(deltaX);
+        monthPreviewGrid.setTranslationX(deltaX + direction * width);
+    }
+
+    private void prepareMonthPreview(int direction) {
+        if (monthPreviewGrid != null && monthPreviewDirection == direction) {
+            return;
+        }
+        if (monthPreviewGrid != null) {
+            calendarContainer.removeView(monthPreviewGrid);
+        }
+        Habit habit = findSelectedHabit();
+        if (habit == null) {
+            return;
+        }
+        monthPreviewDirection = direction;
+        monthPreview = direction > 0 ? visibleMonth.plusMonths(1) : visibleMonth.minusMonths(1);
+        monthPreviewGrid = createCalendarGrid();
+        populateCalendarGrid(monthPreviewGrid, monthPreview, habit, false);
+        monthPreviewGrid.setTranslationX(direction * calendarContainer.getWidth());
+        calendarContainer.addView(monthPreviewGrid, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void finishMonthDrag(float deltaX, float velocityX) {
+        if (monthPreviewGrid == null) {
+            calendarGrid.setTranslationX(0);
+            return;
+        }
+        int width = calendarContainer.getWidth();
+        boolean passedDistanceThreshold = Math.abs(deltaX) >= width * 0.3f;
+        boolean flickedTowardPreview = Math.abs(velocityX) >= dp(600)
+                && velocityX * monthPreviewDirection < 0;
+        boolean complete = passedDistanceThreshold || flickedTowardPreview;
+        float currentTarget = complete ? -monthPreviewDirection * width : 0;
+        float previewTarget = complete ? 0 : monthPreviewDirection * width;
+        isMonthAnimating = true;
 
         calendarGrid.animate()
-                .translationX(-direction * width)
-                .alpha(0.35f)
-                .setDuration(160)
-                .withEndAction(() -> {
-                    visibleMonth = direction > 0 ? visibleMonth.plusMonths(1) : visibleMonth.minusMonths(1);
-                    renderCalendar();
-                    calendarGrid.setTranslationX(direction * width);
-                    calendarGrid.setAlpha(0.35f);
-                    monthTitle.setTranslationX(direction * dp(48));
-                    monthTitle.setAlpha(0.25f);
-                    calendarGrid.animate()
-                            .translationX(0)
-                            .alpha(1f)
-                            .setDuration(190)
-                            .withEndAction(() -> isMonthAnimating = false)
-                            .start();
-                    monthTitle.animate()
-                            .translationX(0)
-                            .alpha(1f)
-                            .setDuration(190)
-                            .start();
-                })
+                .translationX(currentTarget)
+                .setDuration(180)
                 .start();
 
-        monthTitle.animate()
-                .translationX(-direction * dp(48))
-                .alpha(0.25f)
-                .setDuration(160)
+        monthPreviewGrid.animate()
+                .translationX(previewTarget)
+                .setDuration(180)
+                .withEndAction(() -> {
+                    if (complete) {
+                        visibleMonth = monthPreview;
+                    }
+                    calendarGrid.setTranslationX(0);
+                    calendarContainer.removeView(monthPreviewGrid);
+                    monthPreviewGrid = null;
+                    monthPreview = null;
+                    monthPreviewDirection = 0;
+                    renderCalendar();
+                    isMonthAnimating = false;
+                })
                 .start();
     }
 
-    private void showHabitMenu(View anchor, Habit habit) {
+    private void recycleMonthVelocityTracker() {
+        if (monthVelocityTracker != null) {
+            monthVelocityTracker.recycle();
+            monthVelocityTracker = null;
+        }
+    }
+
+    private void showCreateMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add("Rename");
-        menu.getMenu().add(HABIT_TYPE_BAD.equals(habit.type) ? "Make Good Habit" : "Make Bad Habit");
-        menu.getMenu().add("Delete");
+        menu.getMenu().add("Add habit");
+        menu.getMenu().add("Add folder");
         menu.setOnMenuItemClickListener(item -> {
-            String title = item.getTitle().toString();
-            if ("Rename".equals(title)) {
-                showRenameDialog(habit);
-            } else if ("Make Good Habit".equals(title)) {
-                habit.type = HABIT_TYPE_GOOD;
-                saveHabits();
-                renderAll();
-            } else if ("Make Bad Habit".equals(title)) {
-                habit.type = HABIT_TYPE_BAD;
-                saveHabits();
-                renderAll();
-            } else if ("Delete".equals(title)) {
-                confirmDelete(habit);
+            if ("Add folder".contentEquals(item.getTitle())) {
+                showAddFolderDialog();
+            } else {
+                showAddHabitDialog();
             }
             return true;
         });
         menu.show();
+    }
+
+    private void showFolderMenu(View anchor, HabitFolder folder) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.CENTER_HORIZONTAL);
+        int folderIndex = folders.indexOf(folder);
+        if (folderIndex > 0) {
+            menu.getMenu().add("Move up");
+        }
+        if (folderIndex >= 0 && folderIndex < folders.size() - 1) {
+            menu.getMenu().add("Move down");
+        }
+        menu.getMenu().add("Rename folder");
+        menu.getMenu().add("Delete folder");
+        menu.setOnMenuItemClickListener(item -> {
+            if ("Move up".contentEquals(item.getTitle())) {
+                moveFolder(folder, -1);
+            } else if ("Move down".contentEquals(item.getTitle())) {
+                moveFolder(folder, 1);
+            } else if ("Rename folder".contentEquals(item.getTitle())) {
+                showRenameFolderDialog(folder);
+            } else {
+                confirmDeleteFolder(folder);
+            }
+            return true;
+        });
+        menu.show();
+    }
+
+    private void moveFolder(HabitFolder folder, int direction) {
+        int currentIndex = folders.indexOf(folder);
+        int destinationIndex = currentIndex + direction;
+        if (currentIndex < 0 || destinationIndex < 0 || destinationIndex >= folders.size()) {
+            return;
+        }
+        folders.remove(currentIndex);
+        folders.add(destinationIndex, folder);
+        saveFolders();
+        renderAll();
+    }
+
+    private void showAddFolderDialog() {
+        EditText input = folderNameInput("New folder");
+        new AlertDialog.Builder(this)
+                .setTitle("Add folder")
+                .setView(paddedDialogView(input))
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Add", (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (!isValidFolderName(name, null)) {
+                        return;
+                    }
+                    folders.add(new HabitFolder("folder-" + System.currentTimeMillis(), name));
+                    saveFolders();
+                    renderAll();
+                })
+                .show();
+    }
+
+    private void showRenameFolderDialog(HabitFolder folder) {
+        EditText input = folderNameInput(folder.name);
+        input.setText(folder.name);
+        input.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this)
+                .setTitle("Rename folder")
+                .setView(paddedDialogView(input))
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (!isValidFolderName(name, folder)) {
+                        return;
+                    }
+                    folder.name = name;
+                    saveFolders();
+                    renderAll();
+                })
+                .show();
+    }
+
+    private EditText folderNameInput(String hint) {
+        EditText input = new EditText(this);
+        input.setHint(hint);
+        input.setTextColor(textColor());
+        input.setHintTextColor(mutedTextColor());
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        return input;
+    }
+
+    private boolean isValidFolderName(String name, HabitFolder currentFolder) {
+        if (name.isEmpty()) {
+            Toast.makeText(this, "Name the folder first", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        for (HabitFolder folder : folders) {
+            if (folder != currentFolder && folder.name.equalsIgnoreCase(name)) {
+                Toast.makeText(this, "That folder already exists", Toast.LENGTH_SHORT).show();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void confirmDeleteFolder(HabitFolder folder) {
+        if (folders.size() == 1) {
+            Toast.makeText(this, "Keep at least one folder", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        HabitFolder destination = null;
+        for (HabitFolder candidate : folders) {
+            if (candidate != folder) {
+                destination = candidate;
+                break;
+            }
+        }
+        HabitFolder moveDestination = destination;
+        new AlertDialog.Builder(this)
+                .setTitle("Delete " + folder.name + "?")
+                .setMessage("Its habits and history will be moved to " + moveDestination.name + ".")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    for (Habit habit : habits) {
+                        if (folder.id.equals(habit.type)) {
+                            habit.type = moveDestination.id;
+                        }
+                    }
+                    folders.remove(folder);
+                    saveFolders();
+                    saveHabits();
+                    renderAll();
+                })
+                .show();
+    }
+
+    private void showHabitMenu(View anchor, Habit habit) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        if (findAdjacentHabitIndex(habit, -1) >= 0) {
+            menu.getMenu().add("Move up");
+        }
+        if (findAdjacentHabitIndex(habit, 1) >= 0) {
+            menu.getMenu().add("Move down");
+        }
+        menu.getMenu().add("Rename");
+        for (HabitFolder folder : folders) {
+            if (!folder.id.equals(habit.type)) {
+                menu.getMenu().add("Move to " + folder.name);
+            }
+        }
+        menu.getMenu().add("Delete");
+        menu.setOnMenuItemClickListener(item -> {
+            String title = item.getTitle().toString();
+            if ("Move up".equals(title)) {
+                moveHabitWithinFolder(habit, -1);
+            } else if ("Move down".equals(title)) {
+                moveHabitWithinFolder(habit, 1);
+            } else if ("Rename".equals(title)) {
+                showRenameDialog(habit);
+            } else if ("Delete".equals(title)) {
+                confirmDelete(habit);
+            } else if (title.startsWith("Move to ")) {
+                String folderName = title.substring("Move to ".length());
+                for (HabitFolder folder : folders) {
+                    if (folder.name.equals(folderName)) {
+                        habit.type = folder.id;
+                        saveHabits();
+                        renderAll();
+                        break;
+                    }
+                }
+            }
+            return true;
+        });
+        menu.show();
+    }
+
+    private int findAdjacentHabitIndex(Habit habit, int direction) {
+        int currentIndex = habits.indexOf(habit);
+        for (int index = currentIndex + direction;
+             index >= 0 && index < habits.size();
+             index += direction) {
+            if (habit.type.equals(habits.get(index).type)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private void moveHabitWithinFolder(Habit habit, int direction) {
+        int currentIndex = habits.indexOf(habit);
+        int destinationIndex = findAdjacentHabitIndex(habit, direction);
+        if (currentIndex < 0 || destinationIndex < 0) {
+            return;
+        }
+        Habit displacedHabit = habits.get(destinationIndex);
+        habits.set(destinationIndex, habit);
+        habits.set(currentIndex, displacedHabit);
+        saveHabits();
+        renderDrawerList();
+        renderBottomHabitSelector();
     }
 
     private void showRenameDialog(Habit habit) {
@@ -764,7 +1072,9 @@ public class MainActivity extends Activity {
                         Toast.makeText(this, "Name the habit first", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", HABIT_TYPE_GOOD, new JSONObject(), new JSONObject());
+                    Habit selectedHabit = findSelectedHabit();
+                    String folderId = selectedHabit == null ? folders.get(0).id : selectedHabit.type;
+                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, new JSONObject(), new JSONObject());
                     habits.add(habit);
                     selectedHabitId = habit.id;
                     prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
@@ -956,10 +1266,10 @@ public class MainActivity extends Activity {
         });
     }
 
-    private boolean isMonthSwipe(MotionEvent event) {
+    private boolean isMonthDrag(MotionEvent event) {
         float deltaX = event.getRawX() - monthSwipeStartX;
         float deltaY = event.getRawY() - monthSwipeStartY;
-        return Math.abs(deltaX) > dp(72) && Math.abs(deltaX) > Math.abs(deltaY) * 1.5f;
+        return Math.abs(deltaX) > dp(12) && Math.abs(deltaX) > Math.abs(deltaY) * 1.5f;
     }
 
     private Button iconButton(String text) {
@@ -1076,7 +1386,12 @@ public class MainActivity extends Activity {
     }
 
     private String normalizedHabitType(String type) {
-        return HABIT_TYPE_BAD.equals(type) ? HABIT_TYPE_BAD : HABIT_TYPE_GOOD;
+        for (HabitFolder folder : folders) {
+            if (folder.id.equals(type)) {
+                return type;
+            }
+        }
+        return folders.get(0).id;
     }
 
     private int startColumn(DayOfWeek dayOfWeek) {
@@ -1085,6 +1400,44 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void loadFolders() {
+        folders.clear();
+        String raw = prefs.getString(FOLDERS_KEY, "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.getJSONObject(i);
+                String id = item.optString("id", "").trim();
+                String name = item.optString("name", "").trim();
+                if (!id.isEmpty() && !name.isEmpty()) {
+                    folders.add(new HabitFolder(id, name));
+                }
+            }
+        } catch (JSONException ignored) {
+            folders.clear();
+        }
+        if (folders.isEmpty()) {
+            folders.add(new HabitFolder(HABIT_TYPE_GOOD, "Good Habits"));
+            folders.add(new HabitFolder(HABIT_TYPE_BAD, "Bad Habits"));
+            saveFolders();
+        }
+    }
+
+    private void saveFolders() {
+        JSONArray array = new JSONArray();
+        try {
+            for (HabitFolder folder : folders) {
+                JSONObject item = new JSONObject();
+                item.put("id", folder.id);
+                item.put("name", folder.name);
+                array.put(item);
+            }
+        } catch (JSONException ignored) {
+            Toast.makeText(this, "Could not save folders", Toast.LENGTH_SHORT).show();
+        }
+        prefs.edit().putString(FOLDERS_KEY, array.toString()).apply();
     }
 
     private void loadHabits() {
@@ -1145,6 +1498,48 @@ public class MainActivity extends Activity {
             this.type = type;
             this.states = states;
             this.notes = notes;
+        }
+    }
+
+    private static class HabitFolder {
+        final String id;
+        String name;
+
+        HabitFolder(String id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    private class DayTextView extends TextView {
+        private final Paint slashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private boolean showUnrecordedSlash;
+
+        DayTextView(Context context) {
+            super(context);
+            slashPaint.setStrokeWidth(dp(4));
+            slashPaint.setStrokeCap(Paint.Cap.ROUND);
+        }
+
+        void setShowUnrecordedSlash(boolean show) {
+            showUnrecordedSlash = show;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!showUnrecordedSlash) {
+                return;
+            }
+            slashPaint.setColor(mutedTextColor());
+            canvas.drawLine(
+                    getWidth() * 0.12f,
+                    getHeight() * 0.84f,
+                    getWidth() * 0.88f,
+                    getHeight() * 0.16f,
+                    slashPaint
+            );
         }
     }
 }
