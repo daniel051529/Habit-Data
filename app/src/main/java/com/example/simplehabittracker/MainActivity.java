@@ -486,44 +486,79 @@ public class MainActivity extends Activity {
 
     private void renderDrawerList() {
         habitList.removeAllViews();
+
+        addDrawerSectionHeading("Good Habits");
         for (Habit habit : habits) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(12), dp(6), dp(6), dp(6));
-            if (habit.id.equals(selectedHabitId)) {
-                android.graphics.drawable.GradientDrawable selectedBackground = new android.graphics.drawable.GradientDrawable();
-                selectedBackground.setColor(selectedRowColor());
-                selectedBackground.setCornerRadius(dp(28));
-                row.setBackground(selectedBackground);
-            } else {
-                row.setBackgroundColor(Color.TRANSPARENT);
+            if (!HABIT_TYPE_BAD.equals(habit.type)) {
+                addDrawerHabitRow(habit);
             }
-
-            TextView name = new TextView(this);
-            name.setText(habit.name);
-            name.setTextColor(textColor());
-            name.setTextSize(17);
-            name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            name.setGravity(Gravity.CENTER_VERTICAL);
-            row.addView(name, new LinearLayout.LayoutParams(0, -1, 1));
-
-            Button options = iconButton("⋮");
-            options.setTextSize(24);
-            options.setOnClickListener(v -> showHabitMenu(options, habit));
-            row.addView(options, new LinearLayout.LayoutParams(dp(46), dp(46)));
-
-            row.setOnClickListener(v -> {
-                selectedHabitId = habit.id;
-                prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
-                hideDrawer();
-                renderAll();
-            });
-
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(62));
-            params.setMargins(0, dp(4), 0, dp(4));
-            habitList.addView(row, params);
         }
+
+        addDrawerSectionHeading("Bad Habits");
+        for (Habit habit : habits) {
+            if (HABIT_TYPE_BAD.equals(habit.type)) {
+                addDrawerHabitRow(habit);
+            }
+        }
+    }
+
+    private void addDrawerSectionHeading(String text) {
+        TextView heading = new TextView(this);
+        heading.setText(text);
+        heading.setTextColor(mutedTextColor());
+        heading.setTextSize(12);
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        heading.setGravity(Gravity.CENTER);
+        heading.setPadding(dp(12), 0, dp(12), 0);
+        LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(-1, dp(28));
+        headingParams.setMargins(0, dp(5), 0, 0);
+        habitList.addView(heading, headingParams);
+
+        View divider = new View(this);
+        divider.setBackgroundColor(borderColor());
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(1));
+        params.setMargins(dp(12), 0, dp(12), dp(5));
+        habitList.addView(divider, params);
+    }
+
+    private void addDrawerHabitRow(Habit habit) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(2), dp(4), dp(2));
+        if (habit.id.equals(selectedHabitId)) {
+            boolean badHabit = HABIT_TYPE_BAD.equals(habit.type);
+            android.graphics.drawable.GradientDrawable selectedBackground = new android.graphics.drawable.GradientDrawable();
+            selectedBackground.setColor(selectedHabitTypeColor(badHabit));
+            selectedBackground.setCornerRadius(dp(14));
+            row.setBackground(selectedBackground);
+        } else {
+            row.setBackgroundColor(Color.TRANSPARENT);
+        }
+
+        TextView name = new TextView(this);
+        name.setText(habit.emoji.isEmpty() ? habit.name : habit.emoji + "  " + habit.name);
+        name.setTextColor(textColor());
+        name.setTextSize(16);
+        name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        name.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(name, new LinearLayout.LayoutParams(0, -1, 1));
+
+        Button options = iconButton("⋮");
+        options.setTextSize(22);
+        options.setOnClickListener(v -> showHabitMenu(options, habit));
+        row.addView(options, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        row.setOnClickListener(v -> {
+            selectedHabitId = habit.id;
+            prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
+            hideDrawer();
+            renderAll();
+        });
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(48));
+        params.setMargins(0, dp(1), 0, dp(1));
+        habitList.addView(row, params);
     }
 
     private void renderBottomHabitSelector() {
@@ -1022,9 +1057,6 @@ public class MainActivity extends Activity {
     }
 
     private int habitTypeBorderColor(boolean badHabit) {
-        if (badHabit) {
-            return isDarkMode ? Color.rgb(127, 29, 29) : Color.rgb(254, 202, 202);
-        }
         return borderColor();
     }
 
