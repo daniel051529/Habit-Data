@@ -9,6 +9,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Bundle;
 import android.os.Looper;
@@ -42,6 +43,7 @@ import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,9 +55,13 @@ public class MainActivity extends Activity {
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
     private static final String SLEEP_TIME_MINUTES_KEY = "sleep_time_minutes";
+    private static final String SINGLE_STATE_MIGRATION_KEY = "single_state_migration_complete";
     private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
     private static final String HABIT_TYPE_GOOD = "good";
     private static final String HABIT_TYPE_BAD = "bad";
+    private static final int DEFAULT_HABIT_DATE_COLOR = Color.rgb(22, 163, 74);
+    private static final int DEFAULT_FOLDER_COLOR = Color.rgb(22, 163, 74);
+    private static final int DEFAULT_BAD_FOLDER_COLOR = Color.rgb(220, 38, 38);
     private static final int STATE_EMPTY = 0;
     private static final int STATE_DONE = 1;
     private static final int STATE_MISSED = 2;
@@ -66,6 +72,7 @@ public class MainActivity extends Activity {
     private final List<HabitFolder> folders = new ArrayList<>();
     private final Map<String, HorizontalScrollView> bottomFolderScrollers = new HashMap<>();
     private final Map<String, View> bottomHabitCards = new HashMap<>();
+    private final Map<String, TextView> bottomHabitEmojis = new HashMap<>();
     private final Map<String, TextView> bottomHabitNames = new HashMap<>();
     private final Map<String, LinearLayout> drawerHabitRows = new HashMap<>();
     private final Map<String, TextView> drawerHabitNames = new HashMap<>();
@@ -100,6 +107,7 @@ public class MainActivity extends Activity {
     private TextView sleepCountdownValue;
     private FrameLayout drawerLayer;
     private LinearLayout drawerContent;
+    private ScrollView drawerScroll;
     private LinearLayout habitList;
     private float monthSwipeStartX;
     private float monthSwipeStartY;
@@ -120,7 +128,7 @@ public class MainActivity extends Activity {
         loadFolders();
         loadHabits();
         if (habits.isEmpty()) {
-            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, new JSONObject(), new JSONObject()));
+            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, DEFAULT_HABIT_DATE_COLOR, new JSONObject(), new JSONObject()));
             selectedHabitId = habits.get(0).id;
             saveHabits();
         }
@@ -129,6 +137,7 @@ public class MainActivity extends Activity {
         if (findSelectedHabit() == null) {
             selectedHabitId = habits.get(0).id;
         }
+        migrateToSingleDateState();
 
         buildUi();
         renderAll();
@@ -282,6 +291,13 @@ public class MainActivity extends Activity {
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (isMonthAnimating
                 || (drawerLayer != null && drawerLayer.getVisibility() == View.VISIBLE)) {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN
+                    || event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                monthSwipeInProgress = false;
+                touchStartedInBottomPanel = false;
+                recycleMonthVelocityTracker();
+            }
             return super.dispatchTouchEvent(event);
         }
 
@@ -296,6 +312,9 @@ public class MainActivity extends Activity {
                 touchStartedInBottomPanel = isTouchInsideView(bottomPanel, event);
                 break;
             case MotionEvent.ACTION_MOVE:
+                if (monthVelocityTracker == null) {
+                    return super.dispatchTouchEvent(event);
+                }
                 monthVelocityTracker.addMovement(event);
                 if (touchStartedInBottomPanel) {
                     return super.dispatchTouchEvent(event);
@@ -307,6 +326,11 @@ public class MainActivity extends Activity {
                 }
                 break;
             case MotionEvent.ACTION_UP:
+                if (monthVelocityTracker == null) {
+                    monthSwipeInProgress = false;
+                    touchStartedInBottomPanel = false;
+                    return super.dispatchTouchEvent(event);
+                }
                 monthVelocityTracker.addMovement(event);
                 if (touchStartedInBottomPanel) {
                     touchStartedInBottomPanel = false;
@@ -399,11 +423,12 @@ public class MainActivity extends Activity {
 
         Button themeButton = secondaryButton(isDarkMode ? "Light" : "Dark");
         themeButton.setOnClickListener(v -> {
+            int savedDrawerScrollY = drawerScroll == null ? 0 : drawerScroll.getScrollY();
             isDarkMode = !isDarkMode;
             prefs.edit().putBoolean(DARK_MODE_KEY, isDarkMode).apply();
             buildUi();
             renderAll();
-            showDrawer();
+            restoreOpenDrawer(savedDrawerScrollY);
         });
         LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(78), dp(44));
         themeParams.setMargins(0, 0, dp(8), 0);
@@ -421,11 +446,11 @@ public class MainActivity extends Activity {
         dividerParams.setMargins(0, dp(10), 0, dp(8));
         drawerContent.addView(divider, dividerParams);
 
-        ScrollView scroll = new ScrollView(this);
+        drawerScroll = new ScrollView(this);
         habitList = new LinearLayout(this);
         habitList.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(habitList, new ScrollView.LayoutParams(-1, -2));
-        drawerContent.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        drawerScroll.addView(habitList, new ScrollView.LayoutParams(-1, -2));
+        drawerContent.addView(drawerScroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
         FrameLayout.LayoutParams drawerParams = new FrameLayout.LayoutParams(dp(304), -1);
         drawerParams.gravity = Gravity.START;
@@ -507,14 +532,27 @@ public class MainActivity extends Activity {
                 LocalDate date = month.atDay(dayNumber);
                 String dateKey = date.toString();
                 int state = habit.states.optInt(dateKey, STATE_EMPTY);
+                boolean futureDate = date.isAfter(LocalDate.now());
                 dayView.setText(String.valueOf(dayNumber));
-                applyDayStyle(dayView, state, date.equals(LocalDate.now()));
-                dayView.setShowUnrecordedSlash(state == STATE_EMPTY && date.isBefore(LocalDate.now()));
-                if (interactive) {
+                dayView.setTodayHatResource(date.equals(LocalDate.now())
+                        ? R.drawable.today_hat_crown
+                        : 0);
+                dayView.setHasNote(!habit.notes.optString(dateKey, "").trim().isEmpty());
+                if (futureDate) {
+                    applyFutureDayStyle(dayView);
+                } else {
+                    applyDayStyle(dayView, state, date.equals(LocalDate.now()), habit.dateColor);
+                    dayView.setShowUnrecordedSlash(state == STATE_EMPTY && date.isBefore(LocalDate.now()));
+                }
+                if (interactive && !futureDate) {
                     dayView.setOnClickListener(v -> {
                         cycleDay(habit, dateKey);
                         saveHabits();
                         renderCalendar();
+                    });
+                    dayView.setOnLongClickListener(v -> {
+                        showDateNoteDialog(habit, dateKey);
+                        return true;
                     });
                 }
             } else {
@@ -524,6 +562,45 @@ public class MainActivity extends Activity {
 
             grid.addView(dayView, params);
         }
+    }
+
+    private void showDateNoteDialog(Habit habit, String dateKey) {
+        EditText input = new EditText(this);
+        input.setText(habit.notes.optString(dateKey, ""));
+        input.setHint("Add a note");
+        input.setTextColor(textColor());
+        input.setHintTextColor(mutedTextColor());
+        input.setGravity(Gravity.TOP | Gravity.START);
+        input.setMinLines(4);
+        input.setMaxLines(8);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Note for " + dateKey)
+                .setView(paddedDialogView(input))
+                .setNegativeButton("Cancel", null)
+                .setNeutralButton("Clear", (dialog, which) -> {
+                    habit.notes.remove(dateKey);
+                    saveHabits();
+                    renderCalendar();
+                })
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String note = input.getText().toString().trim();
+                    try {
+                        if (note.isEmpty()) {
+                            habit.notes.remove(dateKey);
+                        } else {
+                            habit.notes.put(dateKey, note);
+                        }
+                        saveHabits();
+                        renderCalendar();
+                    } catch (JSONException ignored) {
+                        Toast.makeText(this, "Could not save that note", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .show();
     }
 
     private void renderDrawerList() {
@@ -606,6 +683,7 @@ public class MainActivity extends Activity {
 
         bottomFolderScrollers.clear();
         bottomHabitCards.clear();
+        bottomHabitEmojis.clear();
         bottomHabitNames.clear();
         bottomPanelContent.removeAllViews();
         for (HabitFolder folder : folders) {
@@ -643,6 +721,7 @@ public class MainActivity extends Activity {
         emoji.setGravity(Gravity.CENTER);
         emoji.setTextColor(textColor());
         card.addView(emoji, new LinearLayout.LayoutParams(dp(28), -1));
+        bottomHabitEmojis.put(habit.id, emoji);
 
         TextView name = new TextView(this);
         name.setText(habit.name);
@@ -699,9 +778,9 @@ public class MainActivity extends Activity {
             row.setBackgroundColor(Color.TRANSPARENT);
             return;
         }
-        boolean badHabit = HABIT_TYPE_BAD.equals(habit.type);
+        int folderColor = folderColorForHabit(habit);
         android.graphics.drawable.GradientDrawable selectedBackground = new android.graphics.drawable.GradientDrawable();
-        selectedBackground.setColor(selectedHabitTypeColor(badHabit));
+        selectedBackground.setColor(selectedFolderBackgroundColor(folderColor));
         selectedBackground.setCornerRadius(dp(14));
         row.setBackground(selectedBackground);
     }
@@ -723,7 +802,7 @@ public class MainActivity extends Activity {
 
     private void cycleDay(Habit habit, String dateKey) {
         int current = habit.states.optInt(dateKey, STATE_EMPTY);
-        int next = current == STATE_EMPTY ? STATE_DONE : current == STATE_DONE ? STATE_MISSED : STATE_EMPTY;
+        int next = current == STATE_EMPTY ? STATE_DONE : STATE_EMPTY;
         try {
             if (next == STATE_EMPTY) {
                 habit.states.remove(dateKey);
@@ -749,12 +828,21 @@ public class MainActivity extends Activity {
         }
         float deltaX = Math.max(-width, Math.min(width, requestedDeltaX));
         int direction = deltaX < 0 ? 1 : -1;
+        if (direction > 0 && !visibleMonth.isBefore(YearMonth.now())) {
+            discardMonthPreview();
+            calendarGrid.setTranslationX(0);
+            return;
+        }
         prepareMonthPreview(direction);
         calendarGrid.setTranslationX(deltaX);
         monthPreviewGrid.setTranslationX(deltaX + direction * width);
     }
 
     private void prepareMonthPreview(int direction) {
+        if (direction > 0 && !visibleMonth.isBefore(YearMonth.now())) {
+            discardMonthPreview();
+            return;
+        }
         if (monthPreviewGrid != null && monthPreviewDirection == direction) {
             return;
         }
@@ -771,6 +859,15 @@ public class MainActivity extends Activity {
         populateCalendarGrid(monthPreviewGrid, monthPreview, habit, false);
         monthPreviewGrid.setTranslationX(direction * calendarContainer.getWidth());
         calendarContainer.addView(monthPreviewGrid, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void discardMonthPreview() {
+        if (monthPreviewGrid != null) {
+            calendarContainer.removeView(monthPreviewGrid);
+        }
+        monthPreviewGrid = null;
+        monthPreview = null;
+        monthPreviewDirection = 0;
     }
 
     private void finishMonthDrag(float deltaX, float velocityX) {
@@ -841,6 +938,7 @@ public class MainActivity extends Activity {
         if (folderIndex >= 0 && folderIndex < folders.size() - 1) {
             menu.getMenu().add("Move down");
         }
+        menu.getMenu().add("Folder color");
         menu.getMenu().add("Rename folder");
         menu.getMenu().add("Delete folder");
         menu.setOnMenuItemClickListener(item -> {
@@ -848,6 +946,8 @@ public class MainActivity extends Activity {
                 moveFolder(folder, -1);
             } else if ("Move down".contentEquals(item.getTitle())) {
                 moveFolder(folder, 1);
+            } else if ("Folder color".contentEquals(item.getTitle())) {
+                showFolderColorDialog(folder);
             } else if ("Rename folder".contentEquals(item.getTitle())) {
                 showRenameFolderDialog(folder);
             } else {
@@ -881,7 +981,7 @@ public class MainActivity extends Activity {
                     if (!isValidFolderName(name, null)) {
                         return;
                     }
-                    folders.add(new HabitFolder("folder-" + System.currentTimeMillis(), name));
+                    folders.add(new HabitFolder("folder-" + System.currentTimeMillis(), name, DEFAULT_FOLDER_COLOR));
                     saveFolders();
                     renderAll();
                 })
@@ -971,6 +1071,7 @@ public class MainActivity extends Activity {
         if (findAdjacentHabitIndex(habit, 1) >= 0) {
             menu.getMenu().add("Move down");
         }
+        menu.getMenu().add("Habit color");
         menu.getMenu().add("Rename");
         for (HabitFolder folder : folders) {
             if (!folder.id.equals(habit.type)) {
@@ -984,6 +1085,8 @@ public class MainActivity extends Activity {
                 moveHabitWithinFolder(habit, -1);
             } else if ("Move down".equals(title)) {
                 moveHabitWithinFolder(habit, 1);
+            } else if ("Habit color".equals(title)) {
+                showHabitColorDialog(habit);
             } else if ("Rename".equals(title)) {
                 showRenameDialog(habit);
             } else if ("Delete".equals(title)) {
@@ -1002,6 +1105,76 @@ public class MainActivity extends Activity {
             return true;
         });
         menu.show();
+    }
+
+    private void showHabitColorDialog(Habit habit) {
+        showColorDialog("Habit color", habit.dateColor, color -> {
+            habit.dateColor = color;
+            saveHabits();
+            renderCalendar();
+        });
+    }
+
+    private void showFolderColorDialog(HabitFolder folder) {
+        showColorDialog("Folder color", folder.color, color -> {
+            folder.color = color;
+            saveFolders();
+            updateBottomHabitSelection();
+            updateDrawerHabitSelection();
+        });
+    }
+
+    private void showColorDialog(String title, int selectedColor, ColorPickedListener listener) {
+        int[] colors = {
+                Color.rgb(22, 163, 74),
+                Color.rgb(13, 148, 136),
+                Color.rgb(54, 139, 193),
+                Color.rgb(135, 8, 80),
+                Color.rgb(202, 138, 4),
+                Color.rgb(220, 38, 38)
+        };
+        String[] names = {"Green", "Teal", "Blue", "Purple", "Yellow", "Red"};
+
+        GridLayout palette = new GridLayout(this);
+        palette.setColumnCount(3);
+        palette.setPadding(dp(8), dp(8), dp(8), dp(8));
+        List<View> swatches = new ArrayList<>();
+        for (int index = 0; index < colors.length; index++) {
+            View swatch = new View(this);
+            swatch.setContentDescription(names[index]);
+            android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
+            background.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+            background.setColor(colors[index]);
+            background.setStroke(
+                    dp(colors[index] == selectedColor ? 4 : 1),
+                    colors[index] == selectedColor ? textColor() : borderColor()
+            );
+            swatch.setBackground(background);
+            GridLayout.LayoutParams params = new GridLayout.LayoutParams();
+            params.width = dp(52);
+            params.height = dp(52);
+            params.setMargins(dp(10), dp(8), dp(10), dp(8));
+            palette.addView(swatch, params);
+            swatches.add(swatch);
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(paddedDialogView(palette))
+                .setNegativeButton("Cancel", null)
+                .create();
+        for (int index = 0; index < swatches.size(); index++) {
+            int color = colors[index];
+            swatches.get(index).setOnClickListener(v -> {
+                listener.onColorPicked(color);
+                dialog.dismiss();
+            });
+        }
+        dialog.show();
+    }
+
+    private interface ColorPickedListener {
+        void onColorPicked(int color);
     }
 
     private int findAdjacentHabitIndex(Habit habit, int direction) {
@@ -1074,7 +1247,7 @@ public class MainActivity extends Activity {
                     }
                     Habit selectedHabit = findSelectedHabit();
                     String folderId = selectedHabit == null ? folders.get(0).id : selectedHabit.type;
-                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, new JSONObject(), new JSONObject());
+                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, DEFAULT_HABIT_DATE_COLOR, new JSONObject(), new JSONObject());
                     habits.add(habit);
                     selectedHabitId = habit.id;
                     prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
@@ -1107,14 +1280,32 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Clear", (dialog, which) -> {
                     habit.emoji = "";
                     saveHabits();
-                    renderCalendar();
+                    updateHabitEmojiViews(habit);
                 })
                 .setPositiveButton("Save", (dialog, which) -> {
                     habit.emoji = firstEmojiLikeText(input.getText().toString().trim());
                     saveHabits();
-                    renderCalendar();
+                    updateHabitEmojiViews(habit);
                 })
                 .show();
+    }
+
+    private void updateHabitEmojiViews(Habit habit) {
+        TextView bottomEmoji = bottomHabitEmojis.get(habit.id);
+        if (bottomEmoji != null) {
+            bottomEmoji.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
+        }
+
+        TextView drawerName = drawerHabitNames.get(habit.id);
+        if (drawerName != null) {
+            drawerName.setText(habit.emoji.isEmpty()
+                    ? habit.name
+                    : habit.emoji + "  " + habit.name);
+        }
+
+        if (habit.id.equals(selectedHabitId) && habitEmojiButton != null) {
+            habitEmojiButton.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
+        }
     }
 
     private void showSleepTimeDialog() {
@@ -1158,19 +1349,19 @@ public class MainActivity extends Activity {
 
     private void applyHabitSelectorStyle(View view, Habit habit) {
         boolean selected = habit.id.equals(selectedHabitId);
-        boolean badHabit = HABIT_TYPE_BAD.equals(habit.type);
+        int folderColor = folderColorForHabit(habit);
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
-        drawable.setColor(selected ? selectedHabitTypeColor(badHabit) : panelColor());
+        drawable.setColor(selected ? selectedFolderBackgroundColor(folderColor) : panelColor());
         drawable.setCornerRadius(dp(18));
-        drawable.setStroke(dp(1), selected ? habitTypeAccentColor(badHabit) : habitTypeBorderColor(badHabit));
+        drawable.setStroke(dp(1), selected ? folderColor : borderColor());
         view.setBackground(drawable);
     }
 
-    private void applyDayStyle(TextView view, int state, boolean isToday) {
+    private void applyDayStyle(TextView view, int state, boolean isToday, int completedColor) {
         int background;
         int text;
         if (state == STATE_DONE) {
-            background = Color.rgb(22, 163, 74);
+            background = completedColor;
             text = Color.WHITE;
         } else if (state == STATE_MISSED) {
             background = Color.rgb(220, 38, 38);
@@ -1186,6 +1377,17 @@ public class MainActivity extends Activity {
         drawable.setStroke(isToday ? dp(2) : dp(1), isToday ? accentColor() : borderColor());
         view.setBackground(drawable);
         view.setTextColor(text);
+    }
+
+    private void applyFutureDayStyle(TextView view) {
+        android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
+        drawable.setColor(panelColor());
+        drawable.setCornerRadius(dp(8));
+        drawable.setStroke(dp(1), borderColor());
+        view.setBackground(drawable);
+        view.setTextColor(mutedTextColor());
+        view.setAlpha(0.48f);
+        view.setClickable(false);
     }
 
     private void confirmDelete(Habit habit) {
@@ -1226,6 +1428,16 @@ public class MainActivity extends Activity {
                 .setDuration(220)
                 .withEndAction(() -> isDrawerAnimating = false)
                 .start();
+    }
+
+    private void restoreOpenDrawer(int scrollY) {
+        drawerLayer.animate().cancel();
+        drawerContent.animate().cancel();
+        drawerLayer.setVisibility(View.VISIBLE);
+        drawerLayer.setAlpha(1f);
+        drawerContent.setTranslationX(0);
+        isDrawerAnimating = false;
+        drawerScroll.post(() -> drawerScroll.scrollTo(0, scrollY));
     }
 
     private void hideDrawer() {
@@ -1352,22 +1564,26 @@ public class MainActivity extends Activity {
         return isDarkMode ? Color.rgb(45, 212, 191) : Color.rgb(15, 118, 110);
     }
 
-    private int selectedHabitTypeColor(boolean badHabit) {
-        if (badHabit) {
-            return isDarkMode ? Color.rgb(127, 29, 29) : Color.rgb(254, 226, 226);
+    private int folderColorForHabit(Habit habit) {
+        for (HabitFolder folder : folders) {
+            if (folder.id.equals(habit.type)) {
+                return folder.color;
+            }
         }
-        return selectedRowColor();
+        return DEFAULT_FOLDER_COLOR;
     }
 
-    private int habitTypeAccentColor(boolean badHabit) {
-        if (badHabit) {
-            return isDarkMode ? Color.rgb(248, 113, 113) : Color.rgb(220, 38, 38);
-        }
-        return accentColor();
+    private int selectedFolderBackgroundColor(int folderColor) {
+        return blendColors(panelColor(), folderColor, isDarkMode ? 0.38f : 0.18f);
     }
 
-    private int habitTypeBorderColor(boolean badHabit) {
-        return borderColor();
+    private int blendColors(int baseColor, int overlayColor, float overlayAmount) {
+        float baseAmount = 1f - overlayAmount;
+        return Color.rgb(
+                Math.round(Color.red(baseColor) * baseAmount + Color.red(overlayColor) * overlayAmount),
+                Math.round(Color.green(baseColor) * baseAmount + Color.green(overlayColor) * overlayAmount),
+                Math.round(Color.blue(baseColor) * baseAmount + Color.blue(overlayColor) * overlayAmount)
+        );
     }
 
     private void applySystemBarTheme() {
@@ -1412,15 +1628,16 @@ public class MainActivity extends Activity {
                 String id = item.optString("id", "").trim();
                 String name = item.optString("name", "").trim();
                 if (!id.isEmpty() && !name.isEmpty()) {
-                    folders.add(new HabitFolder(id, name));
+                    int defaultColor = HABIT_TYPE_BAD.equals(id) ? DEFAULT_BAD_FOLDER_COLOR : DEFAULT_FOLDER_COLOR;
+                    folders.add(new HabitFolder(id, name, item.optInt("color", defaultColor)));
                 }
             }
         } catch (JSONException ignored) {
             folders.clear();
         }
         if (folders.isEmpty()) {
-            folders.add(new HabitFolder(HABIT_TYPE_GOOD, "Good Habits"));
-            folders.add(new HabitFolder(HABIT_TYPE_BAD, "Bad Habits"));
+            folders.add(new HabitFolder(HABIT_TYPE_GOOD, "Good Habits", DEFAULT_FOLDER_COLOR));
+            folders.add(new HabitFolder(HABIT_TYPE_BAD, "Bad Habits", DEFAULT_BAD_FOLDER_COLOR));
             saveFolders();
         }
     }
@@ -1432,12 +1649,34 @@ public class MainActivity extends Activity {
                 JSONObject item = new JSONObject();
                 item.put("id", folder.id);
                 item.put("name", folder.name);
+                item.put("color", folder.color);
                 array.put(item);
             }
         } catch (JSONException ignored) {
             Toast.makeText(this, "Could not save folders", Toast.LENGTH_SHORT).show();
         }
         prefs.edit().putString(FOLDERS_KEY, array.toString()).apply();
+    }
+
+    private void migrateToSingleDateState() {
+        if (prefs.getBoolean(SINGLE_STATE_MIGRATION_KEY, false)) {
+            return;
+        }
+        for (Habit habit : habits) {
+            Iterator<String> dates = habit.states.keys();
+            while (dates.hasNext()) {
+                String dateKey = dates.next();
+                if (habit.states.optInt(dateKey, STATE_EMPTY) == STATE_MISSED) {
+                    try {
+                        habit.states.put(dateKey, STATE_DONE);
+                    } catch (JSONException ignored) {
+                        Toast.makeText(this, "Could not migrate a date", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            }
+        }
+        saveHabits();
+        prefs.edit().putBoolean(SINGLE_STATE_MIGRATION_KEY, true).apply();
     }
 
     private void loadHabits() {
@@ -1452,6 +1691,7 @@ public class MainActivity extends Activity {
                         item.getString("name"),
                         item.optString("emoji", ""),
                         normalizedHabitType(item.optString("type", HABIT_TYPE_GOOD)),
+                        item.optInt("dateColor", DEFAULT_HABIT_DATE_COLOR),
                         item.optJSONObject("states") == null ? new JSONObject() : item.optJSONObject("states"),
                         item.optJSONObject("notes") == null ? new JSONObject() : item.optJSONObject("notes")
                 ));
@@ -1470,6 +1710,7 @@ public class MainActivity extends Activity {
                 item.put("name", habit.name);
                 item.put("emoji", habit.emoji);
                 item.put("type", habit.type);
+                item.put("dateColor", habit.dateColor);
                 item.put("states", habit.states);
                 item.put("notes", habit.notes);
                 array.put(item);
@@ -1488,14 +1729,16 @@ public class MainActivity extends Activity {
         String name;
         String emoji;
         String type;
+        int dateColor;
         final JSONObject states;
         final JSONObject notes;
 
-        Habit(String id, String name, String emoji, String type, JSONObject states, JSONObject notes) {
+        Habit(String id, String name, String emoji, String type, int dateColor, JSONObject states, JSONObject notes) {
             this.id = id;
             this.name = name;
             this.emoji = emoji;
             this.type = type;
+            this.dateColor = dateColor;
             this.states = states;
             this.notes = notes;
         }
@@ -1504,16 +1747,21 @@ public class MainActivity extends Activity {
     private static class HabitFolder {
         final String id;
         String name;
+        int color;
 
-        HabitFolder(String id, String name) {
+        HabitFolder(String id, String name, int color) {
             this.id = id;
             this.name = name;
+            this.color = color;
         }
     }
 
     private class DayTextView extends TextView {
         private final Paint slashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint notePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private boolean showUnrecordedSlash;
+        private boolean hasNote;
+        private Drawable todayHat;
 
         DayTextView(Context context) {
             super(context);
@@ -1526,20 +1774,57 @@ public class MainActivity extends Activity {
             invalidate();
         }
 
+        void setTodayHatResource(int drawableResource) {
+            todayHat = drawableResource == 0 ? null : getDrawable(drawableResource);
+            invalidate();
+        }
+
+        void setHasNote(boolean show) {
+            hasNote = show;
+            invalidate();
+        }
+
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (!showUnrecordedSlash) {
+            if (showUnrecordedSlash) {
+                slashPaint.setColor(mutedTextColor());
+                canvas.drawLine(
+                        getWidth() * 0.12f,
+                        getHeight() * 0.84f,
+                        getWidth() * 0.88f,
+                        getHeight() * 0.16f,
+                        slashPaint
+                );
+            }
+            drawTodayHat(canvas);
+            drawNoteIndicator(canvas);
+        }
+
+        private void drawTodayHat(Canvas canvas) {
+            if (todayHat == null) {
                 return;
             }
-            slashPaint.setColor(mutedTextColor());
-            canvas.drawLine(
-                    getWidth() * 0.12f,
-                    getHeight() * 0.84f,
-                    getWidth() * 0.88f,
-                    getHeight() * 0.16f,
-                    slashPaint
-            );
+            int size = dp(22);
+            int left = dp(1);
+            int top = -dp(2);
+            todayHat.setBounds(left, top, left + size, top + size);
+            int saveCount = canvas.save();
+            canvas.rotate(12f, left + size * 0.5f, top + size * 0.5f);
+            todayHat.draw(canvas);
+            canvas.restoreToCount(saveCount);
+        }
+
+        private void drawNoteIndicator(Canvas canvas) {
+            if (!hasNote) {
+                return;
+            }
+            float centerX = getWidth() - dp(6);
+            float centerY = dp(6);
+            notePaint.setColor(Color.argb(150, 0, 0, 0));
+            canvas.drawCircle(centerX, centerY, dp(4), notePaint);
+            notePaint.setColor(Color.WHITE);
+            canvas.drawCircle(centerX, centerY, dp(3), notePaint);
         }
     }
 }
