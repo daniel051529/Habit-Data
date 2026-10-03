@@ -5,12 +5,18 @@ import android.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.app.TimePickerDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.media.ExifInterface;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Bundle;
 import android.os.Looper;
@@ -25,6 +31,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ScrollView;
@@ -43,6 +50,10 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -56,10 +67,14 @@ public class MainActivity extends Activity {
     private static final String FOLDERS_KEY = "folders";
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
+    private static final String APP_FONT_KEY = "app_font";
     private static final String CENTER_HABIT_TITLE_KEY = "center_habit_title";
+    private static final String HIDE_TITLE_EMOJI_KEY = "hide_title_emoji";
     private static final String UNSELECTED_DATE_STYLE_KEY = "unselected_date_style";
     private static final String SLEEP_TIME_MINUTES_KEY = "sleep_time_minutes";
     private static final String SINGLE_STATE_MIGRATION_KEY = "single_state_migration_complete";
+    private static final String CALENDAR_BACKGROUND_FILE = "calendar_background.webp";
+    private static final int PICK_CALENDAR_BACKGROUND_REQUEST = 4103;
     private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
     private static final String HABIT_TYPE_GOOD = "good";
     private static final String HABIT_TYPE_BAD = "bad";
@@ -81,6 +96,9 @@ public class MainActivity extends Activity {
     private static final int UNSELECTED_STYLE_BLANK = 0;
     private static final int UNSELECTED_STYLE_DIAGONAL = 1;
     private static final int UNSELECTED_STYLE_HORIZONTAL = 2;
+    private static final String FONT_DEFAULT = "Default";
+    private static final String FONT_SERIF = "Serif";
+    private static final String FONT_TORONTO_SUBWAY = "Toronto Subway";
 
     private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM", Locale.ENGLISH);
     private final DateTimeFormatter sleepTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
@@ -105,9 +123,12 @@ public class MainActivity extends Activity {
     private YearMonth visibleMonth;
     private String selectedHabitId;
     private boolean isDarkMode;
+    private String appFont;
     private boolean isHabitTitleCentered;
+    private boolean hideTitleEmoji;
     private int unselectedDateStyle;
     private int sleepTimeMinutes;
+    private Bitmap calendarBackgroundBitmap;
 
     private FrameLayout root;
     private LinearLayout page;
@@ -144,9 +165,23 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         visibleMonth = YearMonth.now();
         isDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
+        appFont = normalizedAppFont(prefs.getString(APP_FONT_KEY, FONT_DEFAULT));
         isHabitTitleCentered = prefs.getBoolean(CENTER_HABIT_TITLE_KEY, false);
+        if (prefs.contains(HIDE_TITLE_EMOJI_KEY)) {
+            hideTitleEmoji = prefs.getBoolean(HIDE_TITLE_EMOJI_KEY, false);
+        } else if (prefs.contains("show_habit_emoji_button")) {
+            hideTitleEmoji = !prefs.getBoolean("show_habit_emoji_button", true);
+            prefs.edit()
+                    .putBoolean(HIDE_TITLE_EMOJI_KEY, hideTitleEmoji)
+                    .remove("show_habit_emoji_button")
+                    .apply();
+        } else {
+            hideTitleEmoji = false;
+        }
         unselectedDateStyle = prefs.getInt(UNSELECTED_DATE_STYLE_KEY, UNSELECTED_STYLE_DIAGONAL);
         sleepTimeMinutes = prefs.getInt(SLEEP_TIME_MINUTES_KEY, DEFAULT_SLEEP_TIME_MINUTES);
+        deleteFile("today_photo.webp");
+        calendarBackgroundBitmap = loadPrivateBitmap(CALENDAR_BACKGROUND_FILE);
 
         loadFolders();
         loadHabits();
@@ -205,40 +240,57 @@ public class MainActivity extends Activity {
             }
         });
         FrameLayout.LayoutParams habitTitleParams = new FrameLayout.LayoutParams(-1, -1);
-        habitTitleParams.setMargins(0, 0, dp(48), 0);
-        if (isHabitTitleCentered) {
-            habitTitleParams.setMargins(dp(48), 0, dp(48), 0);
+        int emojiSpace = hideTitleEmoji ? 0 : dp(48);
+        habitTitleParams.setMargins(0, 0, emojiSpace, 0);
+        if (isHabitTitleCentered && !hideTitleEmoji) {
+            habitTitleParams.setMargins(emojiSpace, 0, emojiSpace, 0);
         }
         habitTitleRow.addView(habitTitle, habitTitleParams);
 
         habitEmojiButton = iconButton("+");
         habitEmojiButton.setTextSize(22);
         habitEmojiButton.setOnClickListener(v -> showEmojiDialog());
+        habitEmojiButton.setVisibility(hideTitleEmoji ? View.GONE : View.VISIBLE);
         FrameLayout.LayoutParams emojiButtonParams = new FrameLayout.LayoutParams(dp(44), dp(44));
         emojiButtonParams.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
         emojiButtonParams.setMargins(0, 0, dp(2), 0);
         habitTitleRow.addView(habitEmojiButton, emojiButtonParams);
 
-        page.addView(habitTitleRow, new LinearLayout.LayoutParams(-1, dp(56)));
+        page.addView(habitTitleRow, new LinearLayout.LayoutParams(-1, dp(52)));
 
         View mainDivider = new View(this);
         mainDivider.setBackgroundColor(borderColor());
         LinearLayout.LayoutParams mainDividerParams = new LinearLayout.LayoutParams(-1, dp(1));
-        mainDividerParams.setMargins(dp(20), dp(4), dp(20), dp(10));
+        mainDividerParams.setMargins(dp(20), 0, dp(20), dp(6));
         page.addView(mainDivider, mainDividerParams);
 
-        page.addView(buildWeekdayHeader(), new LinearLayout.LayoutParams(-1, dp(34)));
+        FrameLayout calendarSection = new FrameLayout(this);
+        if (calendarBackgroundBitmap != null) {
+            ImageView backgroundImage = new ImageView(this);
+            backgroundImage.setImageBitmap(calendarBackgroundBitmap);
+            backgroundImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            calendarSection.addView(backgroundImage, new FrameLayout.LayoutParams(-1, -1));
 
+            View backgroundOverlay = new View(this);
+            backgroundOverlay.setBackgroundColor(Color.argb(isDarkMode ? 74 : 58, 0, 0, 0));
+            calendarSection.addView(backgroundOverlay, new FrameLayout.LayoutParams(-1, -1));
+        }
+
+        LinearLayout calendarContent = new LinearLayout(this);
+        calendarContent.setOrientation(LinearLayout.VERTICAL);
+        calendarContent.addView(buildWeekdayHeader(), new LinearLayout.LayoutParams(-1, dp(34)));
         calendarContainer = new FrameLayout(this);
         calendarContainer.setClipChildren(true);
         calendarGrid = createCalendarGrid();
         calendarContainer.addView(calendarGrid, new FrameLayout.LayoutParams(-1, -1));
-        page.addView(calendarContainer, new LinearLayout.LayoutParams(-1, dp(380)));
+        calendarContent.addView(calendarContainer, new LinearLayout.LayoutParams(-1, dp(380)));
+        calendarSection.addView(calendarContent, new FrameLayout.LayoutParams(-1, -1));
+        page.addView(calendarSection, new LinearLayout.LayoutParams(-1, dp(414)));
 
         View gridBottomDivider = new View(this);
         gridBottomDivider.setBackgroundColor(borderColor());
         LinearLayout.LayoutParams gridBottomDividerParams = new LinearLayout.LayoutParams(-1, dp(1));
-        gridBottomDividerParams.setMargins(dp(20), 0, dp(20), 0);
+        gridBottomDividerParams.setMargins(dp(20), dp(6), dp(20), 0);
         page.addView(gridBottomDivider, gridBottomDividerParams);
 
         bottomPanel = new LinearLayout(this);
@@ -376,7 +428,7 @@ public class MainActivity extends Activity {
         content.setPadding(dp(14), dp(12), dp(14), dp(24));
 
         addSettingsSectionTitle(content, "Appearance");
-        LinearLayout themeRow = settingsRow("Dark mode");
+        LinearLayout themeRow = settingsRow("Dark Mode");
         Switch themeSwitch = new Switch(this);
         themeSwitch.setContentDescription("Dark mode");
         themeSwitch.setChecked(isDarkMode);
@@ -394,7 +446,36 @@ public class MainActivity extends Activity {
         content.addView(themeRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout alignmentRow = settingsRow("Habit title");
+        LinearLayout fontRow = settingsRow("Font");
+        TextView fontValue = new TextView(this);
+        fontValue.setText(appFont + "  ▾");
+        fontValue.setTextColor(accentColor());
+        fontValue.setTextSize(15);
+        fontValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        fontRow.addView(fontValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        fontRow.setOnClickListener(v -> showFontMenu(fontValue));
+        content.addView(fontRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        LinearLayout emojiButtonRow = settingsRow("Hide Title Emoji");
+        Switch emojiButtonSwitch = new Switch(this);
+        emojiButtonSwitch.setContentDescription("Hide Title Emoji");
+        emojiButtonSwitch.setChecked(hideTitleEmoji);
+        emojiButtonSwitch.setOnCheckedChangeListener((buttonView, checked) -> {
+            if (checked == hideTitleEmoji) {
+                return;
+            }
+            hideTitleEmoji = checked;
+            prefs.edit().putBoolean(HIDE_TITLE_EMOJI_KEY, checked).apply();
+            buildUi();
+            renderAll();
+            showSettings();
+        });
+        emojiButtonRow.addView(emojiButtonSwitch, new LinearLayout.LayoutParams(-2, dp(48)));
+        content.addView(emojiButtonRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        LinearLayout alignmentRow = settingsRow("Habit Title");
         TextView alignmentValue = new TextView(this);
         alignmentValue.setText(isHabitTitleCentered ? "Center  ▾" : "Left  ▾");
         alignmentValue.setTextColor(accentColor());
@@ -405,7 +486,7 @@ public class MainActivity extends Activity {
         content.addView(alignmentRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout unselectedDateRow = settingsRow("Unselected dates");
+        LinearLayout unselectedDateRow = settingsRow("Unselected Dates");
         TextView unselectedDateValue = new TextView(this);
         unselectedDateValue.setText(unselectedDateStyleName() + "  ▾");
         unselectedDateValue.setTextColor(accentColor());
@@ -416,8 +497,19 @@ public class MainActivity extends Activity {
         content.addView(unselectedDateRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
+        LinearLayout calendarBackgroundRow = settingsRow("Calendar Background");
+        TextView calendarBackgroundValue = new TextView(this);
+        calendarBackgroundValue.setText((calendarBackgroundBitmap == null ? "None" : "Custom") + "  ▾");
+        calendarBackgroundValue.setTextColor(accentColor());
+        calendarBackgroundValue.setTextSize(15);
+        calendarBackgroundValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        calendarBackgroundRow.addView(calendarBackgroundValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        calendarBackgroundRow.setOnClickListener(v -> showCalendarBackgroundMenu(calendarBackgroundValue));
+        content.addView(calendarBackgroundRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
         addSettingsSectionTitle(content, "Routine");
-        LinearLayout sleepRow = settingsRow("Sleep time");
+        LinearLayout sleepRow = settingsRow("Sleep Time");
         settingsSleepTimeValue = new TextView(this);
         settingsSleepTimeValue.setTextColor(accentColor());
         settingsSleepTimeValue.setTextSize(15);
@@ -563,7 +655,7 @@ public class MainActivity extends Activity {
         for (String day : days) {
             TextView label = new TextView(this);
             label.setText(day);
-            label.setTextColor(mutedTextColor());
+            label.setTextColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
             label.setTextSize(12);
             label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setGravity(Gravity.CENTER);
@@ -599,6 +691,7 @@ public class MainActivity extends Activity {
         title.setTextColor(textColor());
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER_VERTICAL);
         titleRow.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1));
 
         Button settingsButton = secondaryButton("Settings");
@@ -639,6 +732,7 @@ public class MainActivity extends Activity {
         renderBottomHabitSelector();
         renderCalendar();
         renderSleepCountdown();
+        applyAppFont(root, selectedAppTypeface());
     }
 
     private void renderSleepCountdown() {
@@ -1214,6 +1308,26 @@ public class MainActivity extends Activity {
         renderAll();
     }
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_CALENDAR_BACKGROUND_REQUEST
+                || resultCode != RESULT_OK
+                || data == null) {
+            return;
+        }
+        Uri imageUri = data.getData();
+        if (imageUri == null) {
+            return;
+        }
+        Bitmap selectedImage = decodePickedImage(imageUri);
+        if (selectedImage == null) {
+            Toast.makeText(this, "Could not open that picture", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        showCalendarBackgroundCropDialog(selectedImage);
+    }
+
     private void showAddFolderDialog() {
         EditText input = folderNameInput("New folder");
         new AlertDialog.Builder(this)
@@ -1664,6 +1778,62 @@ public class MainActivity extends Activity {
         page.setVisibility(View.VISIBLE);
     }
 
+    private String normalizedAppFont(String value) {
+        if (FONT_SERIF.equals(value) || FONT_TORONTO_SUBWAY.equals(value)) {
+            return value;
+        }
+        return FONT_DEFAULT;
+    }
+
+    private Typeface selectedAppTypeface() {
+        if (FONT_SERIF.equals(appFont)) {
+            return Typeface.SERIF;
+        }
+        if (FONT_TORONTO_SUBWAY.equals(appFont)) {
+            return getResources().getFont(R.font.toronto_subway);
+        }
+        return Typeface.create("sans-serif-rounded", Typeface.NORMAL);
+    }
+
+    private void applyAppFont(View view, Typeface appTypeface) {
+        if (view instanceof TextView) {
+            TextView textView = (TextView) view;
+            Typeface currentTypeface = textView.getTypeface();
+            int style = currentTypeface == null ? Typeface.NORMAL : currentTypeface.getStyle();
+            textView.setTypeface(appTypeface, style);
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                applyAppFont(group.getChildAt(index), appTypeface);
+            }
+        }
+    }
+
+    private void showFontMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
+        menu.getMenu().add(FONT_DEFAULT);
+        menu.getMenu().add(FONT_SERIF);
+        menu.getMenu().add(FONT_TORONTO_SUBWAY);
+        menu.setOnMenuItemClickListener(item -> {
+            setAppFont(item.getTitle().toString());
+            return true;
+        });
+        menu.show();
+    }
+
+    private void setAppFont(String selectedFont) {
+        String normalizedFont = normalizedAppFont(selectedFont);
+        if (normalizedFont.equals(appFont)) {
+            return;
+        }
+        appFont = normalizedFont;
+        prefs.edit().putString(APP_FONT_KEY, appFont).apply();
+        buildUi();
+        renderAll();
+        showSettings();
+    }
+
     private void setHabitTitleCentered(boolean centered) {
         if (isHabitTitleCentered == centered) {
             return;
@@ -1725,6 +1895,137 @@ public class MainActivity extends Activity {
         showSettings();
     }
 
+    private void openImagePicker(int requestCode) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        startActivityForResult(intent, requestCode);
+    }
+
+    private void showCalendarBackgroundMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
+        menu.getMenu().add(calendarBackgroundBitmap == null ? "Choose picture" : "Replace picture");
+        if (calendarBackgroundBitmap != null) {
+            menu.getMenu().add("Remove picture");
+        }
+        menu.setOnMenuItemClickListener(item -> {
+            if ("Remove picture".contentEquals(item.getTitle())) {
+                removeCalendarBackground();
+            } else {
+                openImagePicker(PICK_CALENDAR_BACKGROUND_REQUEST);
+            }
+            return true;
+        });
+        menu.show();
+    }
+
+    private void showCalendarBackgroundCropDialog(Bitmap selectedImage) {
+        float calendarAspectRatio = 360f / 414f;
+        PhotoCropView cropView = new PhotoCropView(this, selectedImage, calendarAspectRatio);
+        new AlertDialog.Builder(this)
+                .setTitle("Crop calendar background")
+                .setView(paddedDialogView(cropView))
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    Bitmap croppedImage = cropView.createCroppedBitmap(720, 828);
+                    if (croppedImage == null || !savePrivateBitmap(CALENDAR_BACKGROUND_FILE, croppedImage)) {
+                        if (croppedImage != null) {
+                            croppedImage.recycle();
+                        }
+                        Toast.makeText(this, "Could not save that picture", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    calendarBackgroundBitmap = croppedImage;
+                    rebuildUiKeepingSettingsOpen();
+                })
+                .show();
+    }
+
+    private Bitmap decodePickedImage(Uri imageUri) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream stream = getContentResolver().openInputStream(imageUri)) {
+            BitmapFactory.decodeStream(stream, null, bounds);
+        } catch (IOException ignored) {
+            return null;
+        }
+
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = 1;
+        int largestSide = Math.max(bounds.outWidth, bounds.outHeight);
+        while (largestSide / options.inSampleSize > 2048) {
+            options.inSampleSize *= 2;
+        }
+
+        Bitmap decoded;
+        try (InputStream stream = getContentResolver().openInputStream(imageUri)) {
+            decoded = BitmapFactory.decodeStream(stream, null, options);
+        } catch (IOException ignored) {
+            return null;
+        }
+        if (decoded == null) {
+            return null;
+        }
+
+        int rotation = readImageRotation(imageUri);
+        if (rotation == 0) {
+            return decoded;
+        }
+        Matrix matrix = new Matrix();
+        matrix.postRotate(rotation);
+        Bitmap rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.getWidth(), decoded.getHeight(), matrix, true);
+        if (rotated != decoded) {
+            decoded.recycle();
+        }
+        return rotated;
+    }
+
+    private int readImageRotation(Uri imageUri) {
+        try (InputStream stream = getContentResolver().openInputStream(imageUri)) {
+            if (stream == null) {
+                return 0;
+            }
+            int orientation = new ExifInterface(stream).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+            );
+            if (orientation == ExifInterface.ORIENTATION_ROTATE_90) {
+                return 90;
+            }
+            if (orientation == ExifInterface.ORIENTATION_ROTATE_180) {
+                return 180;
+            }
+            return orientation == ExifInterface.ORIENTATION_ROTATE_270 ? 270 : 0;
+        } catch (IOException ignored) {
+            return 0;
+        }
+    }
+
+    private boolean savePrivateBitmap(String fileName, Bitmap bitmap) {
+        try (FileOutputStream stream = openFileOutput(fileName, Context.MODE_PRIVATE)) {
+            return bitmap.compress(Bitmap.CompressFormat.WEBP, 88, stream);
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private Bitmap loadPrivateBitmap(String fileName) {
+        File photoFile = getFileStreamPath(fileName);
+        return photoFile.exists() ? BitmapFactory.decodeFile(photoFile.getAbsolutePath()) : null;
+    }
+
+    private void removeCalendarBackground() {
+        deleteFile(CALENDAR_BACKGROUND_FILE);
+        calendarBackgroundBitmap = null;
+        rebuildUiKeepingSettingsOpen();
+    }
+
+    private void rebuildUiKeepingSettingsOpen() {
+        buildUi();
+        renderAll();
+        showSettings();
+    }
+
     @Override
     public void onBackPressed() {
         if (drawerLayer != null && drawerLayer.getVisibility() == View.VISIBLE) {
@@ -1776,8 +2077,11 @@ public class MainActivity extends Activity {
             background = completedColor;
             text = Color.WHITE;
         } else {
-            background = panelColor();
-            text = textColor();
+            int panel = panelColor();
+            background = calendarBackgroundBitmap == null
+                    ? panel
+                    : Color.argb(142, Color.red(panel), Color.green(panel), Color.blue(panel));
+            text = calendarBackgroundBitmap == null ? textColor() : Color.WHITE;
         }
 
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
@@ -1790,7 +2094,10 @@ public class MainActivity extends Activity {
 
     private void applyFutureDayStyle(TextView view) {
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
-        drawable.setColor(panelColor());
+        int panel = panelColor();
+        drawable.setColor(calendarBackgroundBitmap == null
+                ? panel
+                : Color.argb(128, Color.red(panel), Color.green(panel), Color.blue(panel)));
         drawable.setCornerRadius(dp(8));
         drawable.setStroke(dp(1), borderColor());
         view.setBackground(drawable);
@@ -2213,6 +2520,144 @@ public class MainActivity extends Activity {
         }
     }
 
+    private class PhotoCropView extends View {
+        private final Bitmap bitmap;
+        private final float aspectRatio;
+        private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float minimumScale;
+        private float imageScale;
+        private float offsetX;
+        private float offsetY;
+        private float lastX;
+        private float lastY;
+        private float pinchStartDistance;
+        private float pinchStartScale;
+        private float pinchFocusX;
+        private float pinchFocusY;
+        private float pinchStartOffsetX;
+        private float pinchStartOffsetY;
+
+        PhotoCropView(Context context, Bitmap bitmap, float aspectRatio) {
+            super(context);
+            this.bitmap = bitmap;
+            this.aspectRatio = aspectRatio;
+            setBackgroundColor(Color.BLACK);
+            borderPaint.setColor(Color.WHITE);
+            borderPaint.setStyle(Paint.Style.STROKE);
+            borderPaint.setStrokeWidth(dp(2));
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            int availableWidth = View.MeasureSpec.getSize(widthMeasureSpec);
+            int width = Math.min(dp(320), availableWidth > 0 ? availableWidth : dp(320));
+            int height = Math.round(width / aspectRatio);
+            setMeasuredDimension(width, height);
+        }
+
+        @Override
+        protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            minimumScale = Math.max(
+                    width / (float) bitmap.getWidth(),
+                    height / (float) bitmap.getHeight()
+            );
+            imageScale = minimumScale;
+            offsetX = (width - bitmap.getWidth() * imageScale) * 0.5f;
+            offsetY = (height - bitmap.getHeight() * imageScale) * 0.5f;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            canvas.save();
+            canvas.translate(offsetX, offsetY);
+            canvas.scale(imageScale, imageScale);
+            canvas.drawBitmap(bitmap, 0, 0, bitmapPaint);
+            canvas.restore();
+            canvas.drawRect(dp(1), dp(1), getWidth() - dp(1), getHeight() - dp(1), borderPaint);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    lastX = event.getX();
+                    lastY = event.getY();
+                    return true;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    if (event.getPointerCount() >= 2) {
+                        pinchStartDistance = pointerDistance(event);
+                        pinchStartScale = imageScale;
+                        pinchFocusX = (event.getX(0) + event.getX(1)) * 0.5f;
+                        pinchFocusY = (event.getY(0) + event.getY(1)) * 0.5f;
+                        pinchStartOffsetX = offsetX;
+                        pinchStartOffsetY = offsetY;
+                    }
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (event.getPointerCount() >= 2 && pinchStartDistance > 0) {
+                        float focusX = (event.getX(0) + event.getX(1)) * 0.5f;
+                        float focusY = (event.getY(0) + event.getY(1)) * 0.5f;
+                        float requestedScale = pinchStartScale * pointerDistance(event) / pinchStartDistance;
+                        imageScale = Math.max(minimumScale, Math.min(minimumScale * 6f, requestedScale));
+                        float scaleRatio = imageScale / pinchStartScale;
+                        offsetX = focusX - (pinchFocusX - pinchStartOffsetX) * scaleRatio;
+                        offsetY = focusY - (pinchFocusY - pinchStartOffsetY) * scaleRatio;
+                    } else {
+                        offsetX += event.getX() - lastX;
+                        offsetY += event.getY() - lastY;
+                        lastX = event.getX();
+                        lastY = event.getY();
+                    }
+                    constrainImage();
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_POINTER_UP:
+                    pinchStartDistance = 0;
+                    int remainingIndex = event.getActionIndex() == 0 ? 1 : 0;
+                    if (remainingIndex < event.getPointerCount()) {
+                        lastX = event.getX(remainingIndex);
+                        lastY = event.getY(remainingIndex);
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    pinchStartDistance = 0;
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        Bitmap createCroppedBitmap(int outputWidth, int outputHeight) {
+            if (getWidth() <= 0 || getHeight() <= 0 || bitmap.isRecycled()) {
+                return null;
+            }
+            Bitmap output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(output);
+            float outputScaleX = outputWidth / (float) getWidth();
+            float outputScaleY = outputHeight / (float) getHeight();
+            canvas.translate(offsetX * outputScaleX, offsetY * outputScaleY);
+            canvas.scale(imageScale * outputScaleX, imageScale * outputScaleY);
+            canvas.drawBitmap(bitmap, 0, 0, bitmapPaint);
+            return output;
+        }
+
+        private float pointerDistance(MotionEvent event) {
+            float deltaX = event.getX(0) - event.getX(1);
+            float deltaY = event.getY(0) - event.getY(1);
+            return (float) Math.hypot(deltaX, deltaY);
+        }
+
+        private void constrainImage() {
+            float imageWidth = bitmap.getWidth() * imageScale;
+            float imageHeight = bitmap.getHeight() * imageScale;
+            offsetX = Math.min(0, Math.max(getWidth() - imageWidth, offsetX));
+            offsetY = Math.min(0, Math.max(getHeight() - imageHeight, offsetY));
+        }
+    }
+
     private class DayTextView extends TextView {
         private final Paint unselectedMarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint notePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -2245,7 +2690,7 @@ public class MainActivity extends Activity {
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (unselectedMarkStyle == UNSELECTED_STYLE_DIAGONAL) {
-                unselectedMarkPaint.setColor(mutedTextColor());
+                unselectedMarkPaint.setColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
                 canvas.drawLine(
                         getWidth() * 0.12f,
                         getHeight() * 0.84f,
@@ -2254,7 +2699,7 @@ public class MainActivity extends Activity {
                         unselectedMarkPaint
                 );
             } else if (unselectedMarkStyle == UNSELECTED_STYLE_HORIZONTAL) {
-                unselectedMarkPaint.setColor(mutedTextColor());
+                unselectedMarkPaint.setColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
                 canvas.drawLine(
                         getWidth() * 0.10f,
                         getHeight() * 0.50f,
