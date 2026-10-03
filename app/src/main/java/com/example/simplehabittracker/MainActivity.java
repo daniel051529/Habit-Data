@@ -2,6 +2,7 @@ package com.example.simplehabittracker;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DatePickerDialog;
 import android.app.TimePickerDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -27,6 +28,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -54,6 +56,8 @@ public class MainActivity extends Activity {
     private static final String FOLDERS_KEY = "folders";
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
+    private static final String CENTER_HABIT_TITLE_KEY = "center_habit_title";
+    private static final String UNSELECTED_DATE_STYLE_KEY = "unselected_date_style";
     private static final String SLEEP_TIME_MINUTES_KEY = "sleep_time_minutes";
     private static final String SINGLE_STATE_MIGRATION_KEY = "single_state_migration_complete";
     private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
@@ -62,11 +66,23 @@ public class MainActivity extends Activity {
     private static final int DEFAULT_HABIT_DATE_COLOR = Color.rgb(22, 163, 74);
     private static final int DEFAULT_FOLDER_COLOR = Color.rgb(22, 163, 74);
     private static final int DEFAULT_BAD_FOLDER_COLOR = Color.rgb(220, 38, 38);
+    private static final int[] COLOR_OPTIONS = {
+            Color.rgb(22, 163, 74),
+            Color.rgb(13, 148, 136),
+            Color.rgb(54, 139, 193),
+            Color.rgb(135, 8, 80),
+            Color.rgb(202, 138, 4),
+            Color.rgb(220, 38, 38)
+    };
+    private static final String[] COLOR_OPTION_NAMES = {"Green", "Teal", "Blue", "Purple", "Yellow", "Red"};
     private static final int STATE_EMPTY = 0;
     private static final int STATE_DONE = 1;
     private static final int STATE_MISSED = 2;
+    private static final int UNSELECTED_STYLE_BLANK = 0;
+    private static final int UNSELECTED_STYLE_DIAGONAL = 1;
+    private static final int UNSELECTED_STYLE_HORIZONTAL = 2;
 
-    private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH);
+    private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM", Locale.ENGLISH);
     private final DateTimeFormatter sleepTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
     private final List<Habit> habits = new ArrayList<>();
     private final List<HabitFolder> folders = new ArrayList<>();
@@ -89,11 +105,14 @@ public class MainActivity extends Activity {
     private YearMonth visibleMonth;
     private String selectedHabitId;
     private boolean isDarkMode;
+    private boolean isHabitTitleCentered;
+    private int unselectedDateStyle;
     private int sleepTimeMinutes;
 
     private FrameLayout root;
     private LinearLayout page;
-    private LinearLayout topBar;
+    private FrameLayout topBar;
+    private TextView yearTitle;
     private TextView monthTitle;
     private TextView habitTitle;
     private Button habitEmojiButton;
@@ -105,6 +124,8 @@ public class MainActivity extends Activity {
     private LinearLayout bottomPanel;
     private LinearLayout bottomPanelContent;
     private TextView sleepCountdownValue;
+    private LinearLayout settingsLayer;
+    private TextView settingsSleepTimeValue;
     private FrameLayout drawerLayer;
     private LinearLayout drawerContent;
     private ScrollView drawerScroll;
@@ -123,12 +144,14 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         visibleMonth = YearMonth.now();
         isDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
+        isHabitTitleCentered = prefs.getBoolean(CENTER_HABIT_TITLE_KEY, false);
+        unselectedDateStyle = prefs.getInt(UNSELECTED_DATE_STYLE_KEY, UNSELECTED_STYLE_DIAGONAL);
         sleepTimeMinutes = prefs.getInt(SLEEP_TIME_MINUTES_KEY, DEFAULT_SLEEP_TIME_MINUTES);
 
         loadFolders();
         loadHabits();
         if (habits.isEmpty()) {
-            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, DEFAULT_HABIT_DATE_COLOR, new JSONObject(), new JSONObject()));
+            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, defaultHabitColors(), new JSONObject(), new JSONObject(), null));
             selectedHabitId = habits.get(0).id;
             saveHabits();
         }
@@ -165,30 +188,34 @@ public class MainActivity extends Activity {
         page.setBackgroundColor(surfaceColor());
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
 
-        page.addView(buildTopBar(), new LinearLayout.LayoutParams(-1, dp(92)));
+        page.addView(buildTopBar(), new LinearLayout.LayoutParams(-1, dp(102)));
 
-        LinearLayout habitTitleRow = new LinearLayout(this);
-        habitTitleRow.setOrientation(LinearLayout.HORIZONTAL);
-        habitTitleRow.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout habitTitleRow = new FrameLayout(this);
         habitTitleRow.setPadding(dp(20), 0, dp(20), 0);
 
         habitTitle = new TextView(this);
         habitTitle.setTextColor(textColor());
         habitTitle.setTextSize(26);
         habitTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        habitTitle.setGravity(Gravity.CENTER_VERTICAL);
+        habitTitle.setGravity((isHabitTitleCentered ? Gravity.CENTER : Gravity.START) | Gravity.CENTER_VERTICAL);
         habitTitle.setOnClickListener(v -> {
             Habit habit = findSelectedHabit();
             if (habit != null) {
                 showRenameDialog(habit);
             }
         });
-        habitTitleRow.addView(habitTitle, new LinearLayout.LayoutParams(0, -1, 1));
+        FrameLayout.LayoutParams habitTitleParams = new FrameLayout.LayoutParams(-1, -1);
+        habitTitleParams.setMargins(0, 0, dp(48), 0);
+        if (isHabitTitleCentered) {
+            habitTitleParams.setMargins(dp(48), 0, dp(48), 0);
+        }
+        habitTitleRow.addView(habitTitle, habitTitleParams);
 
         habitEmojiButton = iconButton("+");
         habitEmojiButton.setTextSize(22);
         habitEmojiButton.setOnClickListener(v -> showEmojiDialog());
-        LinearLayout.LayoutParams emojiButtonParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+        FrameLayout.LayoutParams emojiButtonParams = new FrameLayout.LayoutParams(dp(44), dp(44));
+        emojiButtonParams.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
         emojiButtonParams.setMargins(0, 0, dp(2), 0);
         habitTitleRow.addView(habitEmojiButton, emojiButtonParams);
 
@@ -227,28 +254,51 @@ public class MainActivity extends Activity {
         bottomScroller.addView(bottomPanelContent, new ScrollView.LayoutParams(-1, -2));
         bottomPanel.addView(bottomScroller, new LinearLayout.LayoutParams(-1, -1));
 
+        buildSettingsPage();
         buildDrawer();
         installInsetPanels();
         setContentView(root);
     }
 
     private View buildTopBar() {
-        topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar = new FrameLayout(this);
         topBar.setPadding(dp(10), dp(18), dp(10), dp(10));
         topBar.setBackgroundColor(surfaceColor());
 
         Button menuButton = iconButton("☰");
         menuButton.setOnClickListener(v -> showDrawer());
-        topBar.addView(menuButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        FrameLayout menuSlot = new FrameLayout(this);
+        FrameLayout.LayoutParams menuButtonParams = new FrameLayout.LayoutParams(dp(52), dp(52));
+        menuButtonParams.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
+        menuSlot.addView(menuButton, menuButtonParams);
+        FrameLayout.LayoutParams menuSlotParams = new FrameLayout.LayoutParams(dp(72), dp(52));
+        menuSlotParams.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
+        topBar.addView(menuSlot, menuSlotParams);
+
+        LinearLayout dateHeading = new LinearLayout(this);
+        dateHeading.setOrientation(LinearLayout.VERTICAL);
+        dateHeading.setGravity(Gravity.CENTER);
+
+        yearTitle = new TextView(this);
+        yearTitle.setTextColor(textColor());
+        yearTitle.setTextSize(28);
+        yearTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        yearTitle.setGravity(Gravity.CENTER);
+        yearTitle.setIncludeFontPadding(false);
+        dateHeading.addView(yearTitle, new LinearLayout.LayoutParams(-1, dp(33)));
 
         monthTitle = new TextView(this);
         monthTitle.setTextColor(mutedTextColor());
-        monthTitle.setTextSize(16);
-        monthTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        monthTitle.setTextSize(13);
+        monthTitle.setTypeface(Typeface.DEFAULT);
         monthTitle.setGravity(Gravity.CENTER);
-        topBar.addView(monthTitle, new LinearLayout.LayoutParams(0, -1, 1));
+        monthTitle.setIncludeFontPadding(false);
+        dateHeading.addView(monthTitle, new LinearLayout.LayoutParams(-1, dp(19)));
+
+        FrameLayout.LayoutParams dateHeadingParams = new FrameLayout.LayoutParams(-1, dp(52));
+        dateHeadingParams.gravity = Gravity.CENTER_VERTICAL;
+        dateHeadingParams.setMargins(dp(72), 0, dp(72), 0);
+        topBar.addView(dateHeading, dateHeadingParams);
 
         sleepCountdownValue = new TextView(this);
         sleepCountdownValue.setTextColor(accentColor());
@@ -257,7 +307,9 @@ public class MainActivity extends Activity {
         sleepCountdownValue.setGravity(Gravity.CENTER);
         sleepCountdownValue.setSingleLine(true);
         sleepCountdownValue.setOnClickListener(v -> showSleepTimeDialog());
-        topBar.addView(sleepCountdownValue, new LinearLayout.LayoutParams(dp(72), dp(52)));
+        FrameLayout.LayoutParams countdownParams = new FrameLayout.LayoutParams(dp(72), dp(52));
+        countdownParams.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        topBar.addView(sleepCountdownValue, countdownParams);
 
         return topBar;
     }
@@ -287,9 +339,137 @@ public class MainActivity extends Activity {
         return habitRow;
     }
 
+    private void buildSettingsPage() {
+        settingsLayer = new LinearLayout(this);
+        settingsLayer.setOrientation(LinearLayout.VERTICAL);
+        settingsLayer.setBackgroundColor(surfaceColor());
+        settingsLayer.setPadding(dp(10), dp(18), dp(10), dp(10));
+        settingsLayer.setVisibility(View.GONE);
+        root.addView(settingsLayer, new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button backButton = iconButton("‹");
+        backButton.setTextSize(32);
+        backButton.setContentDescription("Back to calendar");
+        backButton.setOnClickListener(v -> hideSettings());
+        header.addView(backButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        TextView title = new TextView(this);
+        title.setText("Settings");
+        title.setTextColor(textColor());
+        title.setTextSize(24);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(52), 1);
+        titleParams.setMargins(dp(8), 0, dp(52), 0);
+        header.addView(title, titleParams);
+        settingsLayer.addView(header, new LinearLayout.LayoutParams(-1, dp(66)));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(14), dp(12), dp(14), dp(24));
+
+        addSettingsSectionTitle(content, "Appearance");
+        LinearLayout themeRow = settingsRow("Dark mode");
+        Switch themeSwitch = new Switch(this);
+        themeSwitch.setContentDescription("Dark mode");
+        themeSwitch.setChecked(isDarkMode);
+        themeSwitch.setOnCheckedChangeListener((buttonView, checked) -> {
+            if (checked == isDarkMode) {
+                return;
+            }
+            isDarkMode = checked;
+            prefs.edit().putBoolean(DARK_MODE_KEY, isDarkMode).apply();
+            buildUi();
+            renderAll();
+            showSettings();
+        });
+        themeRow.addView(themeSwitch, new LinearLayout.LayoutParams(-2, dp(48)));
+        content.addView(themeRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        LinearLayout alignmentRow = settingsRow("Habit title");
+        TextView alignmentValue = new TextView(this);
+        alignmentValue.setText(isHabitTitleCentered ? "Center  ▾" : "Left  ▾");
+        alignmentValue.setTextColor(accentColor());
+        alignmentValue.setTextSize(15);
+        alignmentValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        alignmentRow.addView(alignmentValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        alignmentRow.setOnClickListener(v -> showHabitTitleAlignmentMenu(alignmentValue));
+        content.addView(alignmentRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        LinearLayout unselectedDateRow = settingsRow("Unselected dates");
+        TextView unselectedDateValue = new TextView(this);
+        unselectedDateValue.setText(unselectedDateStyleName() + "  ▾");
+        unselectedDateValue.setTextColor(accentColor());
+        unselectedDateValue.setTextSize(15);
+        unselectedDateValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        unselectedDateRow.addView(unselectedDateValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        unselectedDateRow.setOnClickListener(v -> showUnselectedDateStyleMenu(unselectedDateValue));
+        content.addView(unselectedDateRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        addSettingsSectionTitle(content, "Routine");
+        LinearLayout sleepRow = settingsRow("Sleep time");
+        settingsSleepTimeValue = new TextView(this);
+        settingsSleepTimeValue.setTextColor(accentColor());
+        settingsSleepTimeValue.setTextSize(15);
+        settingsSleepTimeValue.setTypeface(Typeface.DEFAULT_BOLD);
+        settingsSleepTimeValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        sleepRow.addView(settingsSleepTimeValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        sleepRow.setOnClickListener(v -> showSleepTimeDialog());
+        content.addView(sleepRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        settingsLayer.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        renderSettingsValues();
+    }
+
+    private void addSettingsSectionTitle(LinearLayout parent, String text) {
+        TextView title = new TextView(this);
+        title.setText(text);
+        title.setTextColor(mutedTextColor());
+        title.setTextSize(12);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.BOTTOM);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(42));
+        params.setMargins(dp(4), dp(8), dp(4), dp(6));
+        parent.addView(title, params);
+    }
+
+    private LinearLayout settingsRow(String label) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), 0, dp(4), 0);
+
+        TextView title = new TextView(this);
+        title.setText(label);
+        title.setTextColor(textColor());
+        title.setTextSize(17);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+        return row;
+    }
+
+    private void addSettingsDivider(LinearLayout parent) {
+        View divider = new View(this);
+        divider.setBackgroundColor(borderColor());
+        parent.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+    }
+
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (isMonthAnimating
+                || (settingsLayer != null && settingsLayer.getVisibility() == View.VISIBLE)
                 || (drawerLayer != null && drawerLayer.getVisibility() == View.VISIBLE)) {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN
                     || event.getActionMasked() == MotionEvent.ACTION_UP
@@ -421,18 +601,15 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         titleRow.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1));
 
-        Button themeButton = secondaryButton(isDarkMode ? "Light" : "Dark");
-        themeButton.setOnClickListener(v -> {
-            int savedDrawerScrollY = drawerScroll == null ? 0 : drawerScroll.getScrollY();
-            isDarkMode = !isDarkMode;
-            prefs.edit().putBoolean(DARK_MODE_KEY, isDarkMode).apply();
-            buildUi();
-            renderAll();
-            restoreOpenDrawer(savedDrawerScrollY);
+        Button settingsButton = secondaryButton("Settings");
+        settingsButton.setContentDescription("Settings");
+        settingsButton.setOnClickListener(v -> {
+            showSettings();
+            hideDrawer();
         });
-        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(78), dp(44));
-        themeParams.setMargins(0, 0, dp(8), 0);
-        titleRow.addView(themeButton, themeParams);
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(dp(88), dp(44));
+        settingsParams.setMargins(0, 0, dp(8), 0);
+        titleRow.addView(settingsButton, settingsParams);
 
         Button addButton = primaryButton("+");
         addButton.setTextSize(20);
@@ -484,6 +661,15 @@ public class MainActivity extends Activity {
 
         sleepCountdownValue.setText(String.format(Locale.ENGLISH, "%02d:%02d:%02d", hours, minutes, seconds));
         sleepCountdownValue.setContentDescription("Time until sleep at " + sleepTime.format(sleepTimeFormatter));
+        renderSettingsValues();
+    }
+
+    private void renderSettingsValues() {
+        if (settingsSleepTimeValue == null) {
+            return;
+        }
+        LocalTime sleepTime = LocalTime.of(sleepTimeMinutes / 60, sleepTimeMinutes % 60);
+        settingsSleepTimeValue.setText(sleepTime.format(sleepTimeFormatter));
     }
 
     private void renderCalendar() {
@@ -492,6 +678,9 @@ public class MainActivity extends Activity {
             return;
         }
 
+        clampVisibleMonth(habit);
+
+        yearTitle.setText(String.valueOf(visibleMonth.getYear()));
         monthTitle.setText(visibleMonth.format(monthFormatter));
         habitTitle.setText(habit.name);
         habitEmojiButton.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
@@ -533,18 +722,27 @@ public class MainActivity extends Activity {
                 String dateKey = date.toString();
                 int state = habit.states.optInt(dateKey, STATE_EMPTY);
                 boolean futureDate = date.isAfter(LocalDate.now());
+                boolean beforeStartDate = habit.startDate != null && date.isBefore(habit.startDate);
+                boolean unavailableDate = futureDate || beforeStartDate;
                 dayView.setText(String.valueOf(dayNumber));
-                dayView.setTodayHatResource(date.equals(LocalDate.now())
-                        ? R.drawable.today_hat_crown
+                dayView.setStartDateHatResource(date.equals(habit.startDate)
+                        ? R.drawable.start_date_hat_crown
                         : 0);
                 dayView.setHasNote(!habit.notes.optString(dateKey, "").trim().isEmpty());
-                if (futureDate) {
+                if (unavailableDate) {
                     applyFutureDayStyle(dayView);
                 } else {
-                    applyDayStyle(dayView, state, date.equals(LocalDate.now()), habit.dateColor);
-                    dayView.setShowUnrecordedSlash(state == STATE_EMPTY && date.isBefore(LocalDate.now()));
+                    applyDayStyle(
+                            dayView,
+                            state != STATE_EMPTY,
+                            date.equals(LocalDate.now()),
+                            resolvedDateColor(habit, state)
+                    );
+                    dayView.setUnselectedDateStyle(state == STATE_EMPTY && date.isBefore(LocalDate.now())
+                            ? unselectedDateStyle
+                            : UNSELECTED_STYLE_BLANK);
                 }
-                if (interactive && !futureDate) {
+                if (interactive && !unavailableDate) {
                     dayView.setOnClickListener(v -> {
                         cycleDay(habit, dateKey);
                         saveHabits();
@@ -568,11 +766,12 @@ public class MainActivity extends Activity {
         EditText input = new EditText(this);
         input.setText(habit.notes.optString(dateKey, ""));
         input.setHint("Add a note");
-        input.setTextColor(textColor());
-        input.setHintTextColor(mutedTextColor());
+        applyDialogInputColors(input);
         input.setGravity(Gravity.TOP | Gravity.START);
-        input.setMinLines(4);
+        input.setMinLines(1);
         input.setMaxLines(8);
+        input.setHorizontallyScrolling(false);
+        input.setVerticalScrollBarEnabled(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
@@ -624,7 +823,8 @@ public class MainActivity extends Activity {
         heading.setTextColor(mutedTextColor());
         heading.setTextSize(12);
         heading.setTypeface(Typeface.DEFAULT_BOLD);
-        heading.setGravity(Gravity.CENTER);
+        heading.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        heading.setPadding(dp(12), 0, dp(12), 0);
         heading.setContentDescription(folder.name + " folder options");
         heading.setOnClickListener(v -> showFolderMenu(heading, folder));
 
@@ -802,16 +1002,33 @@ public class MainActivity extends Activity {
 
     private void cycleDay(Habit habit, String dateKey) {
         int current = habit.states.optInt(dateKey, STATE_EMPTY);
-        int next = current == STATE_EMPTY ? STATE_DONE : STATE_EMPTY;
+        int nextColor = habit.dateColors.get(0);
+        boolean clearDate = false;
+        if (current != STATE_EMPTY) {
+            int currentColor = resolvedDateColor(habit, current);
+            int colorIndex = habit.dateColors.indexOf(currentColor);
+            if (colorIndex >= 0 && colorIndex < habit.dateColors.size() - 1) {
+                nextColor = habit.dateColors.get(colorIndex + 1);
+            } else if (colorIndex == habit.dateColors.size() - 1) {
+                clearDate = true;
+            }
+        }
         try {
-            if (next == STATE_EMPTY) {
+            if (clearDate) {
                 habit.states.remove(dateKey);
             } else {
-                habit.states.put(dateKey, next);
+                habit.states.put(dateKey, nextColor);
             }
         } catch (JSONException ignored) {
             Toast.makeText(this, "Could not update that day", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private int resolvedDateColor(Habit habit, int storedValue) {
+        if (storedValue == STATE_DONE || storedValue == STATE_MISSED) {
+            return habit.dateColors.get(0);
+        }
+        return storedValue == STATE_EMPTY ? habit.dateColors.get(0) : storedValue;
     }
 
     private View paddedDialogView(View content) {
@@ -821,6 +1038,11 @@ public class MainActivity extends Activity {
         return wrapper;
     }
 
+    private void applyDialogInputColors(EditText input) {
+        input.setTextColor(Color.BLACK);
+        input.setHintTextColor(Color.rgb(90, 90, 90));
+    }
+
     private void updateMonthDrag(float requestedDeltaX) {
         int width = calendarContainer.getWidth();
         if (width == 0) {
@@ -828,18 +1050,24 @@ public class MainActivity extends Activity {
         }
         float deltaX = Math.max(-width, Math.min(width, requestedDeltaX));
         int direction = deltaX < 0 ? 1 : -1;
-        if (direction > 0 && !visibleMonth.isBefore(YearMonth.now())) {
+        Habit habit = findSelectedHabit();
+        if (habit == null || !canNavigateMonth(direction, habit)) {
             discardMonthPreview();
             calendarGrid.setTranslationX(0);
             return;
         }
         prepareMonthPreview(direction);
+        if (monthPreviewGrid == null) {
+            calendarGrid.setTranslationX(0);
+            return;
+        }
         calendarGrid.setTranslationX(deltaX);
         monthPreviewGrid.setTranslationX(deltaX + direction * width);
     }
 
     private void prepareMonthPreview(int direction) {
-        if (direction > 0 && !visibleMonth.isBefore(YearMonth.now())) {
+        Habit habit = findSelectedHabit();
+        if (habit == null || !canNavigateMonth(direction, habit)) {
             discardMonthPreview();
             return;
         }
@@ -849,16 +1077,32 @@ public class MainActivity extends Activity {
         if (monthPreviewGrid != null) {
             calendarContainer.removeView(monthPreviewGrid);
         }
-        Habit habit = findSelectedHabit();
-        if (habit == null) {
-            return;
-        }
         monthPreviewDirection = direction;
         monthPreview = direction > 0 ? visibleMonth.plusMonths(1) : visibleMonth.minusMonths(1);
         monthPreviewGrid = createCalendarGrid();
         populateCalendarGrid(monthPreviewGrid, monthPreview, habit, false);
         monthPreviewGrid.setTranslationX(direction * calendarContainer.getWidth());
         calendarContainer.addView(monthPreviewGrid, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private boolean canNavigateMonth(int direction, Habit habit) {
+        if (direction > 0) {
+            return visibleMonth.isBefore(YearMonth.now());
+        }
+        return habit.startDate == null || visibleMonth.isAfter(YearMonth.from(habit.startDate));
+    }
+
+    private void clampVisibleMonth(Habit habit) {
+        YearMonth currentMonth = YearMonth.now();
+        if (visibleMonth.isAfter(currentMonth)) {
+            visibleMonth = currentMonth;
+        }
+        if (habit.startDate != null) {
+            YearMonth startMonth = YearMonth.from(habit.startDate);
+            if (visibleMonth.isBefore(startMonth)) {
+                visibleMonth = startMonth;
+            }
+        }
     }
 
     private void discardMonthPreview() {
@@ -1011,8 +1255,7 @@ public class MainActivity extends Activity {
     private EditText folderNameInput(String hint) {
         EditText input = new EditText(this);
         input.setHint(hint);
-        input.setTextColor(textColor());
-        input.setHintTextColor(mutedTextColor());
+        applyDialogInputColors(input);
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         return input;
@@ -1071,7 +1314,11 @@ public class MainActivity extends Activity {
         if (findAdjacentHabitIndex(habit, 1) >= 0) {
             menu.getMenu().add("Move down");
         }
-        menu.getMenu().add("Habit color");
+        menu.getMenu().add("Select color");
+        menu.getMenu().add(habit.startDate == null ? "Set start date" : "Change start date");
+        if (habit.startDate != null) {
+            menu.getMenu().add("Remove start date");
+        }
         menu.getMenu().add("Rename");
         for (HabitFolder folder : folders) {
             if (!folder.id.equals(habit.type)) {
@@ -1085,8 +1332,14 @@ public class MainActivity extends Activity {
                 moveHabitWithinFolder(habit, -1);
             } else if ("Move down".equals(title)) {
                 moveHabitWithinFolder(habit, 1);
-            } else if ("Habit color".equals(title)) {
+            } else if ("Select color".equals(title)) {
                 showHabitColorDialog(habit);
+            } else if ("Set start date".equals(title) || "Change start date".equals(title)) {
+                showHabitStartDatePicker(habit);
+            } else if ("Remove start date".equals(title)) {
+                habit.startDate = null;
+                saveHabits();
+                renderCalendar();
             } else if ("Rename".equals(title)) {
                 showRenameDialog(habit);
             } else if ("Delete".equals(title)) {
@@ -1107,12 +1360,75 @@ public class MainActivity extends Activity {
         menu.show();
     }
 
+    private void showHabitStartDatePicker(Habit habit) {
+        LocalDate initialDate = habit.startDate == null ? LocalDate.now() : habit.startDate;
+        DatePickerDialog dialog = new DatePickerDialog(
+                this,
+                (view, year, month, dayOfMonth) -> {
+                    habit.startDate = LocalDate.of(year, month + 1, dayOfMonth);
+                    visibleMonth = YearMonth.from(habit.startDate);
+                    saveHabits();
+                    discardMonthPreview();
+                    renderCalendar();
+                },
+                initialDate.getYear(),
+                initialDate.getMonthValue() - 1,
+                initialDate.getDayOfMonth()
+        );
+        dialog.setTitle("Habit start date");
+        dialog.getDatePicker().setMaxDate(System.currentTimeMillis());
+        dialog.show();
+    }
+
     private void showHabitColorDialog(Habit habit) {
-        showColorDialog("Habit color", habit.dateColor, color -> {
-            habit.dateColor = color;
-            saveHabits();
-            renderCalendar();
-        });
+        List<Integer> selectedColors = new ArrayList<>();
+        for (int color : COLOR_OPTIONS) {
+            if (habit.dateColors.contains(color)) {
+                selectedColors.add(color);
+            }
+        }
+        if (selectedColors.isEmpty()) {
+            selectedColors.add(DEFAULT_HABIT_DATE_COLOR);
+        }
+
+        GridLayout palette = new GridLayout(this);
+        palette.setColumnCount(3);
+        palette.setPadding(dp(8), dp(8), dp(8), dp(8));
+        List<View> swatches = new ArrayList<>();
+        for (int index = 0; index < COLOR_OPTIONS.length; index++) {
+            int color = COLOR_OPTIONS[index];
+            View swatch = createColorSwatch(color, COLOR_OPTION_NAMES[index], selectedColors.contains(color));
+            swatch.setOnClickListener(v -> {
+                if (selectedColors.contains(color)) {
+                    if (selectedColors.size() == 1) {
+                        Toast.makeText(this, "Keep at least one habit color", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    selectedColors.remove(Integer.valueOf(color));
+                } else {
+                    selectedColors.add(color);
+                }
+                applyColorSwatchStyle(swatch, color, selectedColors.contains(color));
+            });
+            palette.addView(swatch, colorSwatchParams());
+            swatches.add(swatch);
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Habit colors")
+                .setView(paddedDialogView(palette))
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    habit.dateColors.clear();
+                    for (int color : COLOR_OPTIONS) {
+                        if (selectedColors.contains(color)) {
+                            habit.dateColors.add(color);
+                        }
+                    }
+                    saveHabits();
+                    renderCalendar();
+                })
+                .show();
     }
 
     private void showFolderColorDialog(HabitFolder folder) {
@@ -1125,36 +1441,17 @@ public class MainActivity extends Activity {
     }
 
     private void showColorDialog(String title, int selectedColor, ColorPickedListener listener) {
-        int[] colors = {
-                Color.rgb(22, 163, 74),
-                Color.rgb(13, 148, 136),
-                Color.rgb(54, 139, 193),
-                Color.rgb(135, 8, 80),
-                Color.rgb(202, 138, 4),
-                Color.rgb(220, 38, 38)
-        };
-        String[] names = {"Green", "Teal", "Blue", "Purple", "Yellow", "Red"};
-
         GridLayout palette = new GridLayout(this);
         palette.setColumnCount(3);
         palette.setPadding(dp(8), dp(8), dp(8), dp(8));
         List<View> swatches = new ArrayList<>();
-        for (int index = 0; index < colors.length; index++) {
-            View swatch = new View(this);
-            swatch.setContentDescription(names[index]);
-            android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
-            background.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-            background.setColor(colors[index]);
-            background.setStroke(
-                    dp(colors[index] == selectedColor ? 4 : 1),
-                    colors[index] == selectedColor ? textColor() : borderColor()
+        for (int index = 0; index < COLOR_OPTIONS.length; index++) {
+            View swatch = createColorSwatch(
+                    COLOR_OPTIONS[index],
+                    COLOR_OPTION_NAMES[index],
+                    COLOR_OPTIONS[index] == selectedColor
             );
-            swatch.setBackground(background);
-            GridLayout.LayoutParams params = new GridLayout.LayoutParams();
-            params.width = dp(52);
-            params.height = dp(52);
-            params.setMargins(dp(10), dp(8), dp(10), dp(8));
-            palette.addView(swatch, params);
+            palette.addView(swatch, colorSwatchParams());
             swatches.add(swatch);
         }
 
@@ -1164,13 +1461,36 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Cancel", null)
                 .create();
         for (int index = 0; index < swatches.size(); index++) {
-            int color = colors[index];
+            int color = COLOR_OPTIONS[index];
             swatches.get(index).setOnClickListener(v -> {
                 listener.onColorPicked(color);
                 dialog.dismiss();
             });
         }
         dialog.show();
+    }
+
+    private View createColorSwatch(int color, String name, boolean selected) {
+        View swatch = new View(this);
+        swatch.setContentDescription(name);
+        applyColorSwatchStyle(swatch, color, selected);
+        return swatch;
+    }
+
+    private void applyColorSwatchStyle(View swatch, int color, boolean selected) {
+        android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
+        background.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        background.setColor(color);
+        background.setStroke(dp(selected ? 4 : 1), selected ? Color.BLACK : borderColor());
+        swatch.setBackground(background);
+    }
+
+    private GridLayout.LayoutParams colorSwatchParams() {
+        GridLayout.LayoutParams params = new GridLayout.LayoutParams();
+        params.width = dp(52);
+        params.height = dp(52);
+        params.setMargins(dp(10), dp(8), dp(10), dp(8));
+        return params;
     }
 
     private interface ColorPickedListener {
@@ -1206,6 +1526,7 @@ public class MainActivity extends Activity {
     private void showRenameDialog(Habit habit) {
         EditText input = new EditText(this);
         input.setText(habit.name);
+        applyDialogInputColors(input);
         input.setSelectAllOnFocus(true);
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -1230,8 +1551,7 @@ public class MainActivity extends Activity {
     private void showAddHabitDialog() {
         EditText input = new EditText(this);
         input.setHint("New habit");
-        input.setTextColor(textColor());
-        input.setHintTextColor(mutedTextColor());
+        applyDialogInputColors(input);
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
 
@@ -1247,7 +1567,7 @@ public class MainActivity extends Activity {
                     }
                     Habit selectedHabit = findSelectedHabit();
                     String folderId = selectedHabit == null ? folders.get(0).id : selectedHabit.type;
-                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, DEFAULT_HABIT_DATE_COLOR, new JSONObject(), new JSONObject());
+                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, defaultHabitColors(), new JSONObject(), new JSONObject(), null);
                     habits.add(habit);
                     selectedHabitId = habit.id;
                     prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
@@ -1266,8 +1586,7 @@ public class MainActivity extends Activity {
         EditText input = new EditText(this);
         input.setText(habit.emoji);
         input.setHint("Emoji");
-        input.setTextColor(textColor());
-        input.setHintTextColor(mutedTextColor());
+        applyDialogInputColors(input);
         input.setSingleLine(true);
         input.setGravity(Gravity.CENTER);
         input.setTextSize(26);
@@ -1317,6 +1636,7 @@ public class MainActivity extends Activity {
                     sleepTimeMinutes = selectedHour * 60 + selectedMinute;
                     prefs.edit().putInt(SLEEP_TIME_MINUTES_KEY, sleepTimeMinutes).apply();
                     renderSleepCountdown();
+                    renderSettingsValues();
                 },
                 hour,
                 minute,
@@ -1324,6 +1644,98 @@ public class MainActivity extends Activity {
         );
         dialog.setTitle("Sleep time");
         dialog.show();
+    }
+
+    private void showSettings() {
+        if (settingsLayer == null) {
+            return;
+        }
+        recycleMonthVelocityTracker();
+        monthSwipeInProgress = false;
+        page.setVisibility(View.GONE);
+        settingsLayer.setVisibility(View.VISIBLE);
+    }
+
+    private void hideSettings() {
+        if (settingsLayer == null || settingsLayer.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        settingsLayer.setVisibility(View.GONE);
+        page.setVisibility(View.VISIBLE);
+    }
+
+    private void setHabitTitleCentered(boolean centered) {
+        if (isHabitTitleCentered == centered) {
+            return;
+        }
+        isHabitTitleCentered = centered;
+        prefs.edit().putBoolean(CENTER_HABIT_TITLE_KEY, centered).apply();
+        buildUi();
+        renderAll();
+        showSettings();
+    }
+
+    private void showHabitTitleAlignmentMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
+        menu.getMenu().add("Left");
+        menu.getMenu().add("Center");
+        menu.setOnMenuItemClickListener(item -> {
+            setHabitTitleCentered("Center".contentEquals(item.getTitle()));
+            return true;
+        });
+        menu.show();
+    }
+
+    private String unselectedDateStyleName() {
+        if (unselectedDateStyle == UNSELECTED_STYLE_BLANK) {
+            return "Blank";
+        }
+        if (unselectedDateStyle == UNSELECTED_STYLE_HORIZONTAL) {
+            return "Horizontal";
+        }
+        return "Diagonal";
+    }
+
+    private void showUnselectedDateStyleMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
+        menu.getMenu().add("Blank");
+        menu.getMenu().add("Diagonal");
+        menu.getMenu().add("Horizontal");
+        menu.setOnMenuItemClickListener(item -> {
+            String title = item.getTitle().toString();
+            int selectedStyle = "Blank".equals(title)
+                    ? UNSELECTED_STYLE_BLANK
+                    : "Horizontal".equals(title)
+                    ? UNSELECTED_STYLE_HORIZONTAL
+                    : UNSELECTED_STYLE_DIAGONAL;
+            setUnselectedDateStyle(selectedStyle);
+            return true;
+        });
+        menu.show();
+    }
+
+    private void setUnselectedDateStyle(int style) {
+        if (unselectedDateStyle == style) {
+            return;
+        }
+        unselectedDateStyle = style;
+        prefs.edit().putInt(UNSELECTED_DATE_STYLE_KEY, style).apply();
+        buildUi();
+        renderAll();
+        showSettings();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (drawerLayer != null && drawerLayer.getVisibility() == View.VISIBLE) {
+            hideDrawer();
+            return;
+        }
+        if (settingsLayer != null && settingsLayer.getVisibility() == View.VISIBLE) {
+            hideSettings();
+            return;
+        }
+        super.onBackPressed();
     }
 
     private String firstEmojiLikeText(String value) {
@@ -1357,14 +1769,11 @@ public class MainActivity extends Activity {
         view.setBackground(drawable);
     }
 
-    private void applyDayStyle(TextView view, int state, boolean isToday, int completedColor) {
+    private void applyDayStyle(TextView view, boolean recorded, boolean isToday, int completedColor) {
         int background;
         int text;
-        if (state == STATE_DONE) {
+        if (recorded) {
             background = completedColor;
-            text = Color.WHITE;
-        } else if (state == STATE_MISSED) {
-            background = Color.rgb(220, 38, 38);
             text = Color.WHITE;
         } else {
             background = panelColor();
@@ -1467,8 +1876,10 @@ public class MainActivity extends Activity {
 
             topBar.setPadding(dp(10), topInset + dp(18), dp(10), dp(10));
             ViewGroup.LayoutParams topParams = topBar.getLayoutParams();
-            topParams.height = topInset + dp(74);
+            topParams.height = topInset + dp(84);
             topBar.setLayoutParams(topParams);
+
+            settingsLayer.setPadding(dp(10), topInset + dp(18), dp(10), dp(10));
 
             bottomPanel.setMinimumHeight(bottomInset + dp(112));
             bottomPanel.setPadding(dp(20), dp(14), dp(20), bottomInset + dp(18));
@@ -1679,6 +2090,41 @@ public class MainActivity extends Activity {
         prefs.edit().putBoolean(SINGLE_STATE_MIGRATION_KEY, true).apply();
     }
 
+    private static List<Integer> defaultHabitColors() {
+        List<Integer> colors = new ArrayList<>();
+        colors.add(DEFAULT_HABIT_DATE_COLOR);
+        return colors;
+    }
+
+    private List<Integer> readHabitColors(JSONObject item) {
+        List<Integer> colors = new ArrayList<>();
+        JSONArray storedColors = item.optJSONArray("dateColors");
+        if (storedColors != null) {
+            for (int index = 0; index < storedColors.length() && colors.size() < COLOR_OPTIONS.length; index++) {
+                int color = storedColors.optInt(index, 0);
+                if (color != 0 && !colors.contains(color)) {
+                    colors.add(color);
+                }
+            }
+        }
+        if (colors.isEmpty()) {
+            colors.add(item.optInt("dateColor", DEFAULT_HABIT_DATE_COLOR));
+        }
+        return colors;
+    }
+
+    private LocalDate parseHabitStartDate(String storedDate) {
+        if (storedDate == null || storedDate.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            LocalDate startDate = LocalDate.parse(storedDate);
+            return startDate.isAfter(LocalDate.now()) ? LocalDate.now() : startDate;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private void loadHabits() {
         habits.clear();
         String raw = prefs.getString(HABITS_KEY, "[]");
@@ -1691,9 +2137,10 @@ public class MainActivity extends Activity {
                         item.getString("name"),
                         item.optString("emoji", ""),
                         normalizedHabitType(item.optString("type", HABIT_TYPE_GOOD)),
-                        item.optInt("dateColor", DEFAULT_HABIT_DATE_COLOR),
+                        readHabitColors(item),
                         item.optJSONObject("states") == null ? new JSONObject() : item.optJSONObject("states"),
-                        item.optJSONObject("notes") == null ? new JSONObject() : item.optJSONObject("notes")
+                        item.optJSONObject("notes") == null ? new JSONObject() : item.optJSONObject("notes"),
+                        parseHabitStartDate(item.optString("startDate", ""))
                 ));
             }
         } catch (JSONException ignored) {
@@ -1710,9 +2157,17 @@ public class MainActivity extends Activity {
                 item.put("name", habit.name);
                 item.put("emoji", habit.emoji);
                 item.put("type", habit.type);
-                item.put("dateColor", habit.dateColor);
+                item.put("dateColor", habit.dateColors.get(0));
+                JSONArray dateColors = new JSONArray();
+                for (int color : habit.dateColors) {
+                    dateColors.put(color);
+                }
+                item.put("dateColors", dateColors);
                 item.put("states", habit.states);
                 item.put("notes", habit.notes);
+                if (habit.startDate != null) {
+                    item.put("startDate", habit.startDate.toString());
+                }
                 array.put(item);
             }
         } catch (JSONException ignored) {
@@ -1729,18 +2184,20 @@ public class MainActivity extends Activity {
         String name;
         String emoji;
         String type;
-        int dateColor;
+        final List<Integer> dateColors;
         final JSONObject states;
         final JSONObject notes;
+        LocalDate startDate;
 
-        Habit(String id, String name, String emoji, String type, int dateColor, JSONObject states, JSONObject notes) {
+        Habit(String id, String name, String emoji, String type, List<Integer> dateColors, JSONObject states, JSONObject notes, LocalDate startDate) {
             this.id = id;
             this.name = name;
             this.emoji = emoji;
             this.type = type;
-            this.dateColor = dateColor;
+            this.dateColors = dateColors;
             this.states = states;
             this.notes = notes;
+            this.startDate = startDate;
         }
     }
 
@@ -1757,25 +2214,25 @@ public class MainActivity extends Activity {
     }
 
     private class DayTextView extends TextView {
-        private final Paint slashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint unselectedMarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint notePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private boolean showUnrecordedSlash;
+        private int unselectedMarkStyle = UNSELECTED_STYLE_BLANK;
         private boolean hasNote;
-        private Drawable todayHat;
+        private Drawable startDateHat;
 
         DayTextView(Context context) {
             super(context);
-            slashPaint.setStrokeWidth(dp(4));
-            slashPaint.setStrokeCap(Paint.Cap.ROUND);
+            unselectedMarkPaint.setStrokeWidth(dp(4));
+            unselectedMarkPaint.setStrokeCap(Paint.Cap.ROUND);
         }
 
-        void setShowUnrecordedSlash(boolean show) {
-            showUnrecordedSlash = show;
+        void setUnselectedDateStyle(int style) {
+            unselectedMarkStyle = style;
             invalidate();
         }
 
-        void setTodayHatResource(int drawableResource) {
-            todayHat = drawableResource == 0 ? null : getDrawable(drawableResource);
+        void setStartDateHatResource(int drawableResource) {
+            startDateHat = drawableResource == 0 ? null : getDrawable(drawableResource);
             invalidate();
         }
 
@@ -1787,31 +2244,40 @@ public class MainActivity extends Activity {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (showUnrecordedSlash) {
-                slashPaint.setColor(mutedTextColor());
+            if (unselectedMarkStyle == UNSELECTED_STYLE_DIAGONAL) {
+                unselectedMarkPaint.setColor(mutedTextColor());
                 canvas.drawLine(
                         getWidth() * 0.12f,
                         getHeight() * 0.84f,
                         getWidth() * 0.88f,
                         getHeight() * 0.16f,
-                        slashPaint
+                        unselectedMarkPaint
+                );
+            } else if (unselectedMarkStyle == UNSELECTED_STYLE_HORIZONTAL) {
+                unselectedMarkPaint.setColor(mutedTextColor());
+                canvas.drawLine(
+                        getWidth() * 0.10f,
+                        getHeight() * 0.50f,
+                        getWidth() * 0.90f,
+                        getHeight() * 0.50f,
+                        unselectedMarkPaint
                 );
             }
-            drawTodayHat(canvas);
+            drawStartDateHat(canvas);
             drawNoteIndicator(canvas);
         }
 
-        private void drawTodayHat(Canvas canvas) {
-            if (todayHat == null) {
+        private void drawStartDateHat(Canvas canvas) {
+            if (startDateHat == null) {
                 return;
             }
             int size = dp(22);
             int left = dp(1);
             int top = -dp(2);
-            todayHat.setBounds(left, top, left + size, top + size);
+            startDateHat.setBounds(left, top, left + size, top + size);
             int saveCount = canvas.save();
-            canvas.rotate(12f, left + size * 0.5f, top + size * 0.5f);
-            todayHat.draw(canvas);
+            canvas.rotate(-12f, left + size * 0.5f, top + size * 0.5f);
+            startDateHat.draw(canvas);
             canvas.restoreToCount(saveCount);
         }
 
