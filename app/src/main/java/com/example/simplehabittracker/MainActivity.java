@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
     private static final String APP_FONT_KEY = "app_font";
+    private static final String TODAY_MARKER_KEY = "today_marker";
     private static final String CENTER_HABIT_TITLE_KEY = "center_habit_title";
     private static final String HIDE_TITLE_EMOJI_KEY = "hide_title_emoji";
     private static final String UNSELECTED_DATE_STYLE_KEY = "unselected_date_style";
@@ -99,6 +100,9 @@ public class MainActivity extends Activity {
     private static final String FONT_DEFAULT = "Default";
     private static final String FONT_SERIF = "Serif";
     private static final String FONT_TORONTO_SUBWAY = "Toronto Subway";
+    private static final String TODAY_MARKER_MAP_PIN = "Map Pin";
+    private static final String TODAY_MARKER_CROWN = "Crown";
+    private static final String TODAY_MARKER_BERET = "Beret";
 
     private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM", Locale.ENGLISH);
     private final DateTimeFormatter sleepTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
@@ -124,6 +128,7 @@ public class MainActivity extends Activity {
     private String selectedHabitId;
     private boolean isDarkMode;
     private String appFont;
+    private String todayMarker;
     private boolean isHabitTitleCentered;
     private boolean hideTitleEmoji;
     private int unselectedDateStyle;
@@ -166,6 +171,7 @@ public class MainActivity extends Activity {
         visibleMonth = YearMonth.now();
         isDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
         appFont = normalizedAppFont(prefs.getString(APP_FONT_KEY, FONT_DEFAULT));
+        todayMarker = normalizedTodayMarker(prefs.getString(TODAY_MARKER_KEY, TODAY_MARKER_MAP_PIN));
         isHabitTitleCentered = prefs.getBoolean(CENTER_HABIT_TITLE_KEY, false);
         if (prefs.contains(HIDE_TITLE_EMOJI_KEY)) {
             hideTitleEmoji = prefs.getBoolean(HIDE_TITLE_EMOJI_KEY, false);
@@ -475,7 +481,7 @@ public class MainActivity extends Activity {
         content.addView(emojiButtonRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout alignmentRow = settingsRow("Habit Title");
+        LinearLayout alignmentRow = settingsRow("Title Alignment");
         TextView alignmentValue = new TextView(this);
         alignmentValue.setText(isHabitTitleCentered ? "Center  ▾" : "Left  ▾");
         alignmentValue.setTextColor(accentColor());
@@ -486,7 +492,7 @@ public class MainActivity extends Activity {
         content.addView(alignmentRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout unselectedDateRow = settingsRow("Unselected Dates");
+        LinearLayout unselectedDateRow = settingsRow("Blank Dates");
         TextView unselectedDateValue = new TextView(this);
         unselectedDateValue.setText(unselectedDateStyleName() + "  ▾");
         unselectedDateValue.setTextColor(accentColor());
@@ -497,7 +503,18 @@ public class MainActivity extends Activity {
         content.addView(unselectedDateRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout calendarBackgroundRow = settingsRow("Calendar Background");
+        LinearLayout todayMarkerRow = settingsRow("Today Marker");
+        TextView todayMarkerValue = new TextView(this);
+        todayMarkerValue.setText(todayMarker + "  ▾");
+        todayMarkerValue.setTextColor(accentColor());
+        todayMarkerValue.setTextSize(15);
+        todayMarkerValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        todayMarkerRow.addView(todayMarkerValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        todayMarkerRow.setOnClickListener(v -> showTodayMarkerMenu(todayMarkerValue));
+        content.addView(todayMarkerRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        addSettingsDivider(content);
+
+        LinearLayout calendarBackgroundRow = settingsRow("Background");
         TextView calendarBackgroundValue = new TextView(this);
         calendarBackgroundValue.setText((calendarBackgroundBitmap == null ? "None" : "Custom") + "  ▾");
         calendarBackgroundValue.setTextColor(accentColor());
@@ -836,6 +853,9 @@ public class MainActivity extends Activity {
                             ? unselectedDateStyle
                             : UNSELECTED_STYLE_BLANK);
                 }
+                dayView.setTodayMarkerResource(date.equals(LocalDate.now())
+                        ? todayMarkerDrawableResource()
+                        : 0);
                 if (interactive && !unavailableDate) {
                     dayView.setOnClickListener(v -> {
                         cycleDay(habit, dateKey);
@@ -1834,6 +1854,48 @@ public class MainActivity extends Activity {
         showSettings();
     }
 
+    private String normalizedTodayMarker(String value) {
+        return TODAY_MARKER_CROWN.equals(value)
+                || TODAY_MARKER_BERET.equals(value)
+                || TODAY_MARKER_MAP_PIN.equals(value)
+                ? value
+                : TODAY_MARKER_MAP_PIN;
+    }
+
+    private int todayMarkerDrawableResource() {
+        if (TODAY_MARKER_CROWN.equals(todayMarker)) {
+            return R.drawable.start_date_hat_crown;
+        }
+        if (TODAY_MARKER_BERET.equals(todayMarker)) {
+            return R.drawable.today_marker_beret;
+        }
+        return R.drawable.today_marker_map_pin;
+    }
+
+    private void showTodayMarkerMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
+        menu.getMenu().add(TODAY_MARKER_MAP_PIN);
+        menu.getMenu().add(TODAY_MARKER_CROWN);
+        menu.getMenu().add(TODAY_MARKER_BERET);
+        menu.setOnMenuItemClickListener(item -> {
+            setTodayMarker(item.getTitle().toString());
+            return true;
+        });
+        menu.show();
+    }
+
+    private void setTodayMarker(String selectedMarker) {
+        String normalizedMarker = normalizedTodayMarker(selectedMarker);
+        if (normalizedMarker.equals(todayMarker)) {
+            return;
+        }
+        todayMarker = normalizedMarker;
+        prefs.edit().putString(TODAY_MARKER_KEY, todayMarker).apply();
+        buildUi();
+        renderAll();
+        showSettings();
+    }
+
     private void setHabitTitleCentered(boolean centered) {
         if (isHabitTitleCentered == centered) {
             return;
@@ -2087,7 +2149,10 @@ public class MainActivity extends Activity {
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
         drawable.setColor(background);
         drawable.setCornerRadius(dp(8));
-        drawable.setStroke(isToday ? dp(2) : dp(1), isToday ? accentColor() : borderColor());
+        drawable.setStroke(
+                isToday ? dp(3) : dp(1),
+                isToday ? (isDarkMode ? Color.WHITE : Color.BLACK) : borderColor()
+        );
         view.setBackground(drawable);
         view.setTextColor(text);
     }
@@ -2664,6 +2729,7 @@ public class MainActivity extends Activity {
         private int unselectedMarkStyle = UNSELECTED_STYLE_BLANK;
         private boolean hasNote;
         private Drawable startDateHat;
+        private Drawable todayMarkerDrawable;
 
         DayTextView(Context context) {
             super(context);
@@ -2686,9 +2752,15 @@ public class MainActivity extends Activity {
             invalidate();
         }
 
+        void setTodayMarkerResource(int drawableResource) {
+            todayMarkerDrawable = drawableResource == 0 ? null : getDrawable(drawableResource);
+            invalidate();
+        }
+
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+            drawTodayMarker(canvas);
             if (unselectedMarkStyle == UNSELECTED_STYLE_DIAGONAL) {
                 unselectedMarkPaint.setColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
                 canvas.drawLine(
@@ -2712,17 +2784,28 @@ public class MainActivity extends Activity {
             drawNoteIndicator(canvas);
         }
 
+        private void drawTodayMarker(Canvas canvas) {
+            boolean mapPin = TODAY_MARKER_MAP_PIN.equals(todayMarker);
+            int top = mapPin
+                    ? 0
+                    : TODAY_MARKER_BERET.equals(todayMarker) ? dp(2) : -dp(2);
+            int left = TODAY_MARKER_BERET.equals(todayMarker) ? dp(3) : dp(1);
+            int size = mapPin ? dp(18) : TODAY_MARKER_BERET.equals(todayMarker) ? dp(24) : dp(22);
+            drawHat(canvas, todayMarkerDrawable, size, left, top);
+        }
+
         private void drawStartDateHat(Canvas canvas) {
-            if (startDateHat == null) {
+            drawHat(canvas, startDateHat, dp(22), dp(1), -dp(2));
+        }
+
+        private void drawHat(Canvas canvas, Drawable hat, int size, int left, int top) {
+            if (hat == null) {
                 return;
             }
-            int size = dp(22);
-            int left = dp(1);
-            int top = -dp(2);
-            startDateHat.setBounds(left, top, left + size, top + size);
+            hat.setBounds(left, top, left + size, top + size);
             int saveCount = canvas.save();
             canvas.rotate(-12f, left + size * 0.5f, top + size * 0.5f);
-            startDateHat.draw(canvas);
+            hat.draw(canvas);
             canvas.restoreToCount(saveCount);
         }
 
