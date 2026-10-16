@@ -7,6 +7,7 @@ import android.app.TimePickerDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -31,6 +32,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
@@ -67,6 +69,7 @@ public class MainActivity extends Activity {
     private static final String FOLDERS_KEY = "folders";
     private static final String SELECTED_HABIT_KEY = "selected_habit_id";
     private static final String DARK_MODE_KEY = "dark_mode";
+    private static final String THEME_MODE_KEY = "theme_mode";
     private static final String APP_FONT_KEY = "app_font";
     private static final String TODAY_MARKER_KEY = "today_marker";
     private static final String CENTER_HABIT_TITLE_KEY = "center_habit_title";
@@ -100,9 +103,15 @@ public class MainActivity extends Activity {
     private static final String FONT_DEFAULT = "Default";
     private static final String FONT_SERIF = "Serif";
     private static final String FONT_TORONTO_SUBWAY = "Toronto Subway";
+    private static final String THEME_LIGHT = "Light";
+    private static final String THEME_DARK = "Dark";
+    private static final String THEME_SYSTEM = "System";
     private static final String TODAY_MARKER_MAP_PIN = "Map Pin";
     private static final String TODAY_MARKER_CROWN = "Crown";
     private static final String TODAY_MARKER_BERET = "Beret";
+    private static final String TODAY_MARKER_MISSION_TRIGGER = "Mission Trigger";
+    private static final String TODAY_MARKER_ENTRY_PIN = "Entry Pin";
+    private static final String TODAY_MARKER_NONE = "None";
 
     private final DateTimeFormatter monthFormatter = DateTimeFormatter.ofPattern("MMMM", Locale.ENGLISH);
     private final DateTimeFormatter sleepTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
@@ -118,6 +127,7 @@ public class MainActivity extends Activity {
     private final Runnable countdownTicker = new Runnable() {
         @Override
         public void run() {
+            refreshSystemTheme();
             renderSleepCountdown();
             countdownHandler.postDelayed(this, 1000);
         }
@@ -127,6 +137,7 @@ public class MainActivity extends Activity {
     private YearMonth visibleMonth;
     private String selectedHabitId;
     private boolean isDarkMode;
+    private String themeMode;
     private String appFont;
     private String todayMarker;
     private boolean isHabitTitleCentered;
@@ -169,7 +180,12 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         visibleMonth = YearMonth.now();
-        isDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
+        boolean savedDarkMode = prefs.getBoolean(DARK_MODE_KEY, false);
+        themeMode = normalizedThemeMode(prefs.getString(
+                THEME_MODE_KEY,
+                savedDarkMode ? THEME_DARK : THEME_LIGHT
+        ));
+        isDarkMode = resolvedDarkMode(themeMode);
         appFont = normalizedAppFont(prefs.getString(APP_FONT_KEY, FONT_DEFAULT));
         todayMarker = normalizedTodayMarker(prefs.getString(TODAY_MARKER_KEY, TODAY_MARKER_MAP_PIN));
         isHabitTitleCentered = prefs.getBoolean(CENTER_HABIT_TITLE_KEY, false);
@@ -247,7 +263,7 @@ public class MainActivity extends Activity {
         });
         FrameLayout.LayoutParams habitTitleParams = new FrameLayout.LayoutParams(-1, -1);
         int emojiSpace = hideTitleEmoji ? 0 : dp(48);
-        habitTitleParams.setMargins(0, 0, emojiSpace, 0);
+        habitTitleParams.setMargins(emojiSpace, 0, 0, 0);
         if (isHabitTitleCentered && !hideTitleEmoji) {
             habitTitleParams.setMargins(emojiSpace, 0, emojiSpace, 0);
         }
@@ -258,8 +274,8 @@ public class MainActivity extends Activity {
         habitEmojiButton.setOnClickListener(v -> showEmojiDialog());
         habitEmojiButton.setVisibility(hideTitleEmoji ? View.GONE : View.VISIBLE);
         FrameLayout.LayoutParams emojiButtonParams = new FrameLayout.LayoutParams(dp(44), dp(44));
-        emojiButtonParams.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
-        emojiButtonParams.setMargins(0, 0, dp(2), 0);
+        emojiButtonParams.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
+        emojiButtonParams.setMargins(dp(2), 0, 0, 0);
         habitTitleRow.addView(habitEmojiButton, emojiButtonParams);
 
         page.addView(habitTitleRow, new LinearLayout.LayoutParams(-1, dp(52)));
@@ -434,21 +450,14 @@ public class MainActivity extends Activity {
         content.setPadding(dp(14), dp(12), dp(14), dp(24));
 
         addSettingsSectionTitle(content, "Appearance");
-        LinearLayout themeRow = settingsRow("Dark Mode");
-        Switch themeSwitch = new Switch(this);
-        themeSwitch.setContentDescription("Dark mode");
-        themeSwitch.setChecked(isDarkMode);
-        themeSwitch.setOnCheckedChangeListener((buttonView, checked) -> {
-            if (checked == isDarkMode) {
-                return;
-            }
-            isDarkMode = checked;
-            prefs.edit().putBoolean(DARK_MODE_KEY, isDarkMode).apply();
-            buildUi();
-            renderAll();
-            showSettings();
-        });
-        themeRow.addView(themeSwitch, new LinearLayout.LayoutParams(-2, dp(48)));
+        LinearLayout themeRow = settingsRow("Theme");
+        TextView themeValue = new TextView(this);
+        themeValue.setText(themeMode + "  ▾");
+        themeValue.setTextColor(accentColor());
+        themeValue.setTextSize(15);
+        themeValue.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        themeRow.addView(themeValue, new LinearLayout.LayoutParams(-2, dp(48)));
+        themeRow.setOnClickListener(v -> showThemeMenu(themeValue));
         content.addView(themeRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
@@ -709,16 +718,45 @@ public class MainActivity extends Activity {
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_VERTICAL);
-        titleRow.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1));
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-2, dp(44));
+        titleParams.setMargins(0, 0, dp(12), 0);
+        titleRow.addView(title, titleParams);
 
-        Button settingsButton = secondaryButton("Settings");
+        ImageButton themeButton = drawableIconButton(isDarkMode
+                ? R.drawable.ic_theme_sun
+                : R.drawable.ic_theme_moon);
+        themeButton.setPadding(dp(8), dp(8), dp(8), dp(8));
+        Drawable themeIcon = themeButton.getDrawable();
+        themeIcon.setTint(Color.WHITE);
+        android.graphics.drawable.GradientDrawable themeBackground = new android.graphics.drawable.GradientDrawable();
+        themeBackground.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        themeBackground.setColor(isDarkMode ? Color.rgb(216, 216, 216) : Color.rgb(48, 48, 48));
+        themeButton.setBackground(themeBackground);
+        themeButton.setContentDescription(isDarkMode ? "Switch to light mode" : "Switch to dark mode");
+        themeButton.setOnClickListener(v -> {
+            int drawerScrollY = drawerScroll.getScrollY();
+            themeMode = isDarkMode ? THEME_LIGHT : THEME_DARK;
+            isDarkMode = resolvedDarkMode(themeMode);
+            saveThemePreference();
+            buildUi();
+            renderAll();
+            restoreOpenDrawer(drawerScrollY);
+        });
+        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(32), dp(32));
+        titleRow.addView(themeButton, themeParams);
+
+        View headerSpacer = new View(this);
+        titleRow.addView(headerSpacer, new LinearLayout.LayoutParams(0, 1, 1));
+
+        ImageButton settingsButton = drawableIconButton(R.drawable.ic_settings_gear);
         settingsButton.setContentDescription("Settings");
         settingsButton.setOnClickListener(v -> {
             showSettings();
             hideDrawer();
         });
-        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(dp(88), dp(44));
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(dp(44), dp(44));
         settingsParams.setMargins(0, 0, dp(8), 0);
+
         titleRow.addView(settingsButton, settingsParams);
 
         Button addButton = primaryButton("+");
@@ -813,13 +851,14 @@ public class MainActivity extends Activity {
         int startColumn = startColumn(month.atDay(1).getDayOfWeek());
         int daysInMonth = month.lengthOfMonth();
         int totalCells = 42;
+        Typeface calendarTypeface = selectedAppTypeface();
 
         for (int cell = 0; cell < totalCells; cell++) {
             int dayNumber = cell - startColumn + 1;
             DayTextView dayView = new DayTextView(this);
             dayView.setGravity(Gravity.CENTER);
             dayView.setTextSize(16);
-            dayView.setTypeface(Typeface.DEFAULT_BOLD);
+            dayView.setTypeface(calendarTypeface, Typeface.BOLD);
 
             GridLayout.LayoutParams params = new GridLayout.LayoutParams();
             params.width = 0;
@@ -929,6 +968,7 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        applyAppFont(drawerContent, selectedAppTypeface());
     }
 
     private void addDrawerSectionHeading(HabitFolder folder) {
@@ -1069,7 +1109,10 @@ public class MainActivity extends Activity {
                 applyHabitSelectorStyle(card, habit);
             }
             if (name != null) {
-                name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+                name.setTypeface(
+                        selectedAppTypeface(),
+                        habit.id.equals(selectedHabitId) ? Typeface.BOLD : Typeface.NORMAL
+                );
             }
         }
     }
@@ -1082,7 +1125,10 @@ public class MainActivity extends Activity {
                 applyDrawerHabitRowStyle(row, habit);
             }
             if (name != null) {
-                name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+                name.setTypeface(
+                        selectedAppTypeface(),
+                        habit.id.equals(selectedHabitId) ? Typeface.BOLD : Typeface.NORMAL
+                );
             }
         }
     }
@@ -1149,6 +1195,13 @@ public class MainActivity extends Activity {
         FrameLayout wrapper = new FrameLayout(this);
         wrapper.setPadding(dp(24), dp(8), dp(24), 0);
         wrapper.addView(content, new FrameLayout.LayoutParams(-1, -2));
+        return wrapper;
+    }
+
+    private View centeredDialogView(View content) {
+        FrameLayout wrapper = new FrameLayout(this);
+        wrapper.setPadding(dp(24), dp(8), dp(24), 0);
+        wrapper.addView(content, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_HORIZONTAL));
         return wrapper;
     }
 
@@ -1550,7 +1603,7 @@ public class MainActivity extends Activity {
 
         new AlertDialog.Builder(this)
                 .setTitle("Habit colors")
-                .setView(paddedDialogView(palette))
+                .setView(centeredDialogView(palette))
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Save", (dialog, which) -> {
                     habit.dateColors.clear();
@@ -1591,7 +1644,7 @@ public class MainActivity extends Activity {
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(title)
-                .setView(paddedDialogView(palette))
+                .setView(centeredDialogView(palette))
                 .setNegativeButton("Cancel", null)
                 .create();
         for (int index = 0; index < swatches.size(); index++) {
@@ -1805,6 +1858,81 @@ public class MainActivity extends Activity {
         return FONT_DEFAULT;
     }
 
+    private String normalizedThemeMode(String value) {
+        if (THEME_SYSTEM.equals(value) || "System Timing".equals(value)) {
+            return THEME_SYSTEM;
+        }
+        if (THEME_DARK.equals(value)) {
+            return value;
+        }
+        return THEME_LIGHT;
+    }
+
+    private boolean resolvedDarkMode(String mode) {
+        if (THEME_DARK.equals(mode)) {
+            return true;
+        }
+        if (THEME_SYSTEM.equals(mode)) {
+            int nightMode = getResources().getConfiguration().uiMode
+                    & Configuration.UI_MODE_NIGHT_MASK;
+            return nightMode == Configuration.UI_MODE_NIGHT_YES;
+        }
+        return false;
+    }
+
+    private void saveThemePreference() {
+        prefs.edit()
+                .putString(THEME_MODE_KEY, themeMode)
+                .putBoolean(DARK_MODE_KEY, isDarkMode)
+                .apply();
+    }
+
+    private void showThemeMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
+        menu.getMenu().add(THEME_LIGHT);
+        menu.getMenu().add(THEME_DARK);
+        menu.getMenu().add(THEME_SYSTEM);
+        menu.setOnMenuItemClickListener(item -> {
+            String selectedMode = normalizedThemeMode(item.getTitle().toString());
+            if (selectedMode.equals(themeMode)) {
+                return true;
+            }
+            themeMode = selectedMode;
+            isDarkMode = resolvedDarkMode(themeMode);
+            saveThemePreference();
+            buildUi();
+            renderAll();
+            showSettings();
+            return true;
+        });
+        menu.show();
+    }
+
+    private void refreshSystemTheme() {
+        if (!THEME_SYSTEM.equals(themeMode)) {
+            return;
+        }
+        boolean timedDarkMode = resolvedDarkMode(themeMode);
+        if (timedDarkMode == isDarkMode || root == null) {
+            return;
+        }
+
+        boolean settingsWasOpen = settingsLayer != null
+                && settingsLayer.getVisibility() == View.VISIBLE;
+        boolean drawerWasOpen = drawerLayer != null
+                && drawerLayer.getVisibility() == View.VISIBLE;
+        int drawerScrollY = drawerWasOpen && drawerScroll != null ? drawerScroll.getScrollY() : 0;
+        isDarkMode = timedDarkMode;
+        saveThemePreference();
+        buildUi();
+        renderAll();
+        if (settingsWasOpen) {
+            showSettings();
+        } else if (drawerWasOpen) {
+            restoreOpenDrawer(drawerScrollY);
+        }
+    }
+
     private Typeface selectedAppTypeface() {
         if (FONT_SERIF.equals(appFont)) {
             return Typeface.SERIF;
@@ -1855,19 +1983,27 @@ public class MainActivity extends Activity {
     }
 
     private String normalizedTodayMarker(String value) {
-        return TODAY_MARKER_CROWN.equals(value)
-                || TODAY_MARKER_BERET.equals(value)
+        return TODAY_MARKER_NONE.equals(value)
                 || TODAY_MARKER_MAP_PIN.equals(value)
                 ? value
                 : TODAY_MARKER_MAP_PIN;
     }
 
     private int todayMarkerDrawableResource() {
+        if (TODAY_MARKER_NONE.equals(todayMarker)) {
+            return 0;
+        }
         if (TODAY_MARKER_CROWN.equals(todayMarker)) {
             return R.drawable.start_date_hat_crown;
         }
         if (TODAY_MARKER_BERET.equals(todayMarker)) {
             return R.drawable.today_marker_beret;
+        }
+        if (TODAY_MARKER_MISSION_TRIGGER.equals(todayMarker)) {
+            return R.drawable.today_marker_mission_trigger;
+        }
+        if (TODAY_MARKER_ENTRY_PIN.equals(todayMarker)) {
+            return R.drawable.today_marker_entry_pin;
         }
         return R.drawable.today_marker_map_pin;
     }
@@ -1875,8 +2011,7 @@ public class MainActivity extends Activity {
     private void showTodayMarkerMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor, Gravity.END);
         menu.getMenu().add(TODAY_MARKER_MAP_PIN);
-        menu.getMenu().add(TODAY_MARKER_CROWN);
-        menu.getMenu().add(TODAY_MARKER_BERET);
+        menu.getMenu().add(TODAY_MARKER_NONE);
         menu.setOnMenuItemClickListener(item -> {
             setTodayMarker(item.getTitle().toString());
             return true;
@@ -2279,6 +2414,24 @@ public class MainActivity extends Activity {
         button.setMinimumWidth(0);
         button.setPadding(0, 0, 0, 0);
         button.setBackgroundColor(Color.TRANSPARENT);
+        return button;
+    }
+
+    private ImageButton drawableIconButton(int drawableResource) {
+        ImageButton button = new ImageButton(this);
+        Drawable icon = getDrawable(drawableResource);
+        icon.setTint(textColor());
+        button.setImageDrawable(icon);
+        button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        button.setPadding(dp(11), dp(11), dp(11), dp(11));
+        button.setMinimumHeight(0);
+        button.setMinimumWidth(0);
+        android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
+        background.setColor(panelColor());
+        background.setCornerRadius(dp(8));
+        background.setStroke(dp(1), borderColor());
+        button.setBackground(background);
+        button.setElevation(dp(2));
         return button;
     }
 
@@ -2785,6 +2938,30 @@ public class MainActivity extends Activity {
         }
 
         private void drawTodayMarker(Canvas canvas) {
+            if (TODAY_MARKER_MISSION_TRIGGER.equals(todayMarker)) {
+                if (todayMarkerDrawable == null) {
+                    return;
+                }
+                int width = Math.min(getWidth() - dp(4), dp(42));
+                int height = Math.min(getHeight() - dp(3), dp(42));
+                int left = (getWidth() - width) / 2;
+                int top = getHeight() - height - dp(1);
+                todayMarkerDrawable.setBounds(left, top, left + width, top + height);
+                todayMarkerDrawable.draw(canvas);
+                return;
+            }
+            if (TODAY_MARKER_ENTRY_PIN.equals(todayMarker)) {
+                if (todayMarkerDrawable == null) {
+                    return;
+                }
+                int width = Math.min(getWidth() - dp(8), dp(34));
+                int height = Math.min(getHeight() - dp(3), dp(40));
+                int left = (getWidth() - width) / 2;
+                int top = (getHeight() - height) / 2;
+                todayMarkerDrawable.setBounds(left, top, left + width, top + height);
+                todayMarkerDrawable.draw(canvas);
+                return;
+            }
             boolean mapPin = TODAY_MARKER_MAP_PIN.equals(todayMarker);
             int top = mapPin
                     ? 0
