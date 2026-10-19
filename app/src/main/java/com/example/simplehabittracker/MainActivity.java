@@ -79,6 +79,7 @@ public class MainActivity extends Activity {
     private static final String SINGLE_STATE_MIGRATION_KEY = "single_state_migration_complete";
     private static final String CALENDAR_BACKGROUND_FILE = "calendar_background.webp";
     private static final int PICK_CALENDAR_BACKGROUND_REQUEST = 4103;
+    private static final int PICK_HABIT_BACKGROUND_REQUEST = 4104;
     private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
     private static final String HABIT_TYPE_GOOD = "good";
     private static final String HABIT_TYPE_BAD = "bad";
@@ -144,7 +145,16 @@ public class MainActivity extends Activity {
     private boolean hideTitleEmoji;
     private int unselectedDateStyle;
     private int sleepTimeMinutes;
+    // The default background from Settings; a calendar's own picture takes priority over it.
     private Bitmap calendarBackgroundBitmap;
+    // What the visible calendar is drawn with: its own picture, else the default, else null.
+    private Bitmap activeCalendarBackground;
+    private String loadedHabitBackgroundId;
+    private Bitmap loadedHabitBackground;
+    private String pendingBackgroundHabitId;
+    private ImageView calendarBackgroundImage;
+    private View calendarBackgroundOverlay;
+    private final List<TextView> weekdayLabels = new ArrayList<>();
 
     private FrameLayout root;
     private LinearLayout page;
@@ -208,7 +218,7 @@ public class MainActivity extends Activity {
         loadFolders();
         loadHabits();
         if (habits.isEmpty()) {
-            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, defaultHabitColors(), new JSONObject(), new JSONObject(), null));
+            habits.add(new Habit("habit-" + System.currentTimeMillis(), "Daily Habit", "", HABIT_TYPE_GOOD, defaultHabitColors(), new JSONObject(), new JSONObject(), new JSONObject(), null));
             selectedHabitId = habits.get(0).id;
             saveHabits();
         }
@@ -287,16 +297,15 @@ public class MainActivity extends Activity {
         page.addView(mainDivider, mainDividerParams);
 
         FrameLayout calendarSection = new FrameLayout(this);
-        if (calendarBackgroundBitmap != null) {
-            ImageView backgroundImage = new ImageView(this);
-            backgroundImage.setImageBitmap(calendarBackgroundBitmap);
-            backgroundImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            calendarSection.addView(backgroundImage, new FrameLayout.LayoutParams(-1, -1));
+        calendarBackgroundImage = new ImageView(this);
+        calendarBackgroundImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        calendarBackgroundImage.setVisibility(View.GONE);
+        calendarSection.addView(calendarBackgroundImage, new FrameLayout.LayoutParams(-1, -1));
 
-            View backgroundOverlay = new View(this);
-            backgroundOverlay.setBackgroundColor(Color.argb(isDarkMode ? 74 : 58, 0, 0, 0));
-            calendarSection.addView(backgroundOverlay, new FrameLayout.LayoutParams(-1, -1));
-        }
+        calendarBackgroundOverlay = new View(this);
+        calendarBackgroundOverlay.setBackgroundColor(Color.argb(isDarkMode ? 74 : 58, 0, 0, 0));
+        calendarBackgroundOverlay.setVisibility(View.GONE);
+        calendarSection.addView(calendarBackgroundOverlay, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout calendarContent = new LinearLayout(this);
         calendarContent.setOrientation(LinearLayout.VERTICAL);
@@ -472,16 +481,16 @@ public class MainActivity extends Activity {
         content.addView(fontRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout emojiButtonRow = settingsRow("Hide Title Emoji");
+        LinearLayout emojiButtonRow = settingsRow("Title Emoji");
         Switch emojiButtonSwitch = new Switch(this);
-        emojiButtonSwitch.setContentDescription("Hide Title Emoji");
-        emojiButtonSwitch.setChecked(hideTitleEmoji);
+        emojiButtonSwitch.setContentDescription("Title Emoji");
+        emojiButtonSwitch.setChecked(!hideTitleEmoji);
         emojiButtonSwitch.setOnCheckedChangeListener((buttonView, checked) -> {
-            if (checked == hideTitleEmoji) {
+            if (checked == !hideTitleEmoji) {
                 return;
             }
-            hideTitleEmoji = checked;
-            prefs.edit().putBoolean(HIDE_TITLE_EMOJI_KEY, checked).apply();
+            hideTitleEmoji = !checked;
+            prefs.edit().putBoolean(HIDE_TITLE_EMOJI_KEY, hideTitleEmoji).apply();
             buildUi();
             renderAll();
             showSettings();
@@ -523,7 +532,7 @@ public class MainActivity extends Activity {
         content.addView(todayMarkerRow, new LinearLayout.LayoutParams(-1, dp(58)));
         addSettingsDivider(content);
 
-        LinearLayout calendarBackgroundRow = settingsRow("Background");
+        LinearLayout calendarBackgroundRow = settingsRow("Default background");
         TextView calendarBackgroundValue = new TextView(this);
         calendarBackgroundValue.setText((calendarBackgroundBitmap == null ? "None" : "Custom") + "  ▾");
         calendarBackgroundValue.setTextColor(accentColor());
@@ -678,10 +687,12 @@ public class MainActivity extends Activity {
         header.setColumnCount(7);
         header.setPadding(dp(12), 0, dp(12), 0);
         String[] days = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+        weekdayLabels.clear();
         for (String day : days) {
             TextView label = new TextView(this);
             label.setText(day);
-            label.setTextColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
+            label.setTextColor(activeCalendarBackground == null ? mutedTextColor() : Color.WHITE);
+            weekdayLabels.add(label);
             label.setTextSize(12);
             label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setGravity(Gravity.CENTER);
@@ -826,12 +837,13 @@ public class MainActivity extends Activity {
         if (habit == null) {
             return;
         }
+        applyCalendarBackground(habit);
 
         clampVisibleMonth(habit);
 
         yearTitle.setText(String.valueOf(visibleMonth.getYear()));
         monthTitle.setText(visibleMonth.format(monthFormatter));
-        habitTitle.setText(habit.name);
+        habitTitle.setText(habitTitleText(habit));
         habitEmojiButton.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
         applyEmojiButtonStyle();
         populateCalendarGrid(calendarGrid, visibleMonth, habit, true);
@@ -879,6 +891,7 @@ public class MainActivity extends Activity {
                         ? R.drawable.start_date_hat_crown
                         : 0);
                 dayView.setHasNote(!habit.notes.optString(dateKey, "").trim().isEmpty());
+                dayView.setDayEmoji(habit.dateEmojis.optString(dateKey, ""));
                 if (unavailableDate) {
                     applyFutureDayStyle(dayView);
                 } else {
@@ -916,31 +929,52 @@ public class MainActivity extends Activity {
     }
 
     private void showDateNoteDialog(Habit habit, String dateKey) {
-        EditText input = new EditText(this);
-        input.setText(habit.notes.optString(dateKey, ""));
-        input.setHint("Add a note");
-        applyDialogInputColors(input);
-        input.setGravity(Gravity.TOP | Gravity.START);
-        input.setMinLines(1);
-        input.setMaxLines(8);
-        input.setHorizontallyScrolling(false);
-        input.setVerticalScrollBarEnabled(true);
-        input.setInputType(InputType.TYPE_CLASS_TEXT
+        EditText markInput = new EditText(this);
+        markInput.setText(habit.dateEmojis.optString(dateKey, ""));
+        applyDialogInputColors(markInput);
+        markInput.setSingleLine(true);
+        markInput.setInputType(InputType.TYPE_CLASS_TEXT);
+
+        EditText noteInput = new EditText(this);
+        noteInput.setText(habit.notes.optString(dateKey, ""));
+        applyDialogInputColors(noteInput);
+        noteInput.setGravity(Gravity.TOP | Gravity.START);
+        noteInput.setMinLines(1);
+        noteInput.setMaxLines(8);
+        noteInput.setHorizontallyScrolling(false);
+        noteInput.setVerticalScrollBarEnabled(true);
+        noteInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
 
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.addView(dialogFieldLabel("Mark"));
+        fields.addView(markInput, new LinearLayout.LayoutParams(-1, -2));
+        TextView noteLabel = dialogFieldLabel("Note");
+        noteLabel.setPadding(0, dp(12), 0, 0);
+        fields.addView(noteLabel);
+        fields.addView(noteInput, new LinearLayout.LayoutParams(-1, -2));
+
         new AlertDialog.Builder(this)
-                .setTitle("Note for " + dateKey)
-                .setView(paddedDialogView(input))
+                .setTitle(dateKey)
+                .setView(paddedDialogView(fields))
                 .setNegativeButton("Cancel", null)
                 .setNeutralButton("Clear", (dialog, which) -> {
+                    habit.dateEmojis.remove(dateKey);
                     habit.notes.remove(dateKey);
                     saveHabits();
                     renderCalendar();
                 })
                 .setPositiveButton("Save", (dialog, which) -> {
-                    String note = input.getText().toString().trim();
+                    String mark = markInput.getText().toString().trim();
+                    String note = noteInput.getText().toString().trim();
                     try {
+                        if (mark.isEmpty()) {
+                            habit.dateEmojis.remove(dateKey);
+                        } else {
+                            habit.dateEmojis.put(dateKey, mark);
+                        }
                         if (note.isEmpty()) {
                             habit.notes.remove(dateKey);
                         } else {
@@ -949,10 +983,18 @@ public class MainActivity extends Activity {
                         saveHabits();
                         renderCalendar();
                     } catch (JSONException ignored) {
-                        Toast.makeText(this, "Could not save that note", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Could not save that date", Toast.LENGTH_SHORT).show();
                     }
                 })
                 .show();
+    }
+
+    private TextView dialogFieldLabel(String text) {
+        TextView label = new TextView(this);
+        label.setText(text);
+        label.setTextSize(12);
+        label.setTextColor(Color.rgb(90, 90, 90));
+        return label;
     }
 
     private void renderDrawerList() {
@@ -1001,7 +1043,7 @@ public class MainActivity extends Activity {
         applyDrawerHabitRowStyle(row, habit);
 
         TextView name = new TextView(this);
-        name.setText(habit.emoji.isEmpty() ? habit.name : habit.emoji + "  " + habit.name);
+        name.setText(habitLabel(habit));
         name.setTextColor(textColor());
         name.setTextSize(16);
         name.setTypeface(habit.id.equals(selectedHabitId) ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
@@ -1384,7 +1426,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != PICK_CALENDAR_BACKGROUND_REQUEST
+        if ((requestCode != PICK_CALENDAR_BACKGROUND_REQUEST && requestCode != PICK_HABIT_BACKGROUND_REQUEST)
                 || resultCode != RESULT_OK
                 || data == null) {
             return;
@@ -1398,7 +1440,16 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Could not open that picture", Toast.LENGTH_SHORT).show();
             return;
         }
-        showCalendarBackgroundCropDialog(selectedImage);
+        if (requestCode == PICK_CALENDAR_BACKGROUND_REQUEST) {
+            showCalendarBackgroundCropDialog(selectedImage, null);
+            return;
+        }
+        for (Habit habit : habits) {
+            if (habit.id.equals(pendingBackgroundHabitId)) {
+                showCalendarBackgroundCropDialog(selectedImage, habit);
+                return;
+            }
+        }
     }
 
     private void showAddFolderDialog() {
@@ -1502,6 +1553,11 @@ public class MainActivity extends Activity {
             menu.getMenu().add("Move down");
         }
         menu.getMenu().add("Select color");
+        boolean hasOwnBackground = hasOwnBackground(habit);
+        menu.getMenu().add(hasOwnBackground ? "Replace calendar picture" : "Choose calendar picture");
+        if (hasOwnBackground) {
+            menu.getMenu().add("Use default background");
+        }
         menu.getMenu().add(habit.startDate == null ? "Set start date" : "Change start date");
         if (habit.startDate != null) {
             menu.getMenu().add("Remove start date");
@@ -1521,6 +1577,12 @@ public class MainActivity extends Activity {
                 moveHabitWithinFolder(habit, 1);
             } else if ("Select color".equals(title)) {
                 showHabitColorDialog(habit);
+            } else if ("Choose calendar picture".equals(title) || "Replace calendar picture".equals(title)) {
+                pendingBackgroundHabitId = habit.id;
+                openImagePicker(PICK_HABIT_BACKGROUND_REQUEST);
+            } else if ("Use default background".equals(title)) {
+                removeHabitBackground(habit);
+                renderCalendar();
             } else if ("Set start date".equals(title) || "Change start date".equals(title)) {
                 showHabitStartDatePicker(habit);
             } else if ("Remove start date".equals(title)) {
@@ -1718,21 +1780,26 @@ public class MainActivity extends Activity {
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
 
-        new AlertDialog.Builder(this)
+        AlertDialog renameDialog = new AlertDialog.Builder(this)
                 .setTitle("Rename habit")
                 .setView(paddedDialogView(input))
                 .setNegativeButton("Cancel", null)
+                .setNeutralButton("Emoji", null)
                 .setPositiveButton("Save", (dialog, which) -> {
                     String name = input.getText().toString().trim();
-                    if (name.isEmpty()) {
-                        Toast.makeText(this, "Name the habit first", Toast.LENGTH_SHORT).show();
+                    if (name.isEmpty() && habit.emoji.isEmpty()) {
+                        Toast.makeText(this, "Add a name or an emoji first", Toast.LENGTH_SHORT).show();
                         return;
                     }
                     habit.name = name;
                     saveHabits();
                     renderAll();
                 })
-                .show();
+                .create();
+        renameDialog.show();
+        // Set after show() so the emoji window opens on top without closing the rename.
+        renameDialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+                .setOnClickListener(v -> showEmojiDialog(habit));
     }
 
     private void showAddHabitDialog() {
@@ -1754,7 +1821,7 @@ public class MainActivity extends Activity {
                     }
                     Habit selectedHabit = findSelectedHabit();
                     String folderId = selectedHabit == null ? folders.get(0).id : selectedHabit.type;
-                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, defaultHabitColors(), new JSONObject(), new JSONObject(), null);
+                    Habit habit = new Habit("habit-" + System.currentTimeMillis(), name, "", folderId, defaultHabitColors(), new JSONObject(), new JSONObject(), new JSONObject(), null);
                     habits.add(habit);
                     selectedHabitId = habit.id;
                     prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
@@ -1766,9 +1833,12 @@ public class MainActivity extends Activity {
 
     private void showEmojiDialog() {
         Habit habit = findSelectedHabit();
-        if (habit == null) {
-            return;
+        if (habit != null) {
+            showEmojiDialog(habit);
         }
+    }
+
+    private void showEmojiDialog(Habit habit) {
 
         EditText input = new EditText(this);
         input.setText(habit.emoji);
@@ -1784,12 +1854,21 @@ public class MainActivity extends Activity {
                 .setView(paddedDialogView(input))
                 .setNegativeButton("Cancel", null)
                 .setNeutralButton("Clear", (dialog, which) -> {
+                    if (habit.name.isEmpty()) {
+                        Toast.makeText(this, "Add a name before removing the emoji", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
                     habit.emoji = "";
                     saveHabits();
                     updateHabitEmojiViews(habit);
                 })
                 .setPositiveButton("Save", (dialog, which) -> {
-                    habit.emoji = firstEmojiLikeText(input.getText().toString().trim());
+                    String emoji = firstEmojiLikeText(input.getText().toString().trim());
+                    if (emoji.isEmpty() && habit.name.isEmpty()) {
+                        Toast.makeText(this, "Add a name before removing the emoji", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    habit.emoji = emoji;
                     saveHabits();
                     updateHabitEmojiViews(habit);
                 })
@@ -1804,14 +1883,26 @@ public class MainActivity extends Activity {
 
         TextView drawerName = drawerHabitNames.get(habit.id);
         if (drawerName != null) {
-            drawerName.setText(habit.emoji.isEmpty()
-                    ? habit.name
-                    : habit.emoji + "  " + habit.name);
+            drawerName.setText(habitLabel(habit));
         }
 
         if (habit.id.equals(selectedHabitId) && habitEmojiButton != null) {
             habitEmojiButton.setText(habit.emoji.isEmpty() ? "+" : habit.emoji);
+            habitTitle.setText(habitTitleText(habit));
         }
+    }
+
+    /** Emoji and name together; either one may be empty, but not both. */
+    private String habitLabel(Habit habit) {
+        if (habit.emoji.isEmpty()) {
+            return habit.name;
+        }
+        return habit.name.isEmpty() ? habit.emoji : habit.emoji + "  " + habit.name;
+    }
+
+    /** Falls back to the emoji when the habit has no name and the title emoji button is hidden. */
+    private String habitTitleText(Habit habit) {
+        return habit.name.isEmpty() && hideTitleEmoji ? habit.emoji : habit.name;
     }
 
     private void showSleepTimeDialog() {
@@ -2116,24 +2207,32 @@ public class MainActivity extends Activity {
         menu.show();
     }
 
-    private void showCalendarBackgroundCropDialog(Bitmap selectedImage) {
+    /** Crops and saves a picture for {@code habit}, or the default background when {@code habit} is null. */
+    private void showCalendarBackgroundCropDialog(Bitmap selectedImage, Habit habit) {
         float calendarAspectRatio = 360f / 414f;
         PhotoCropView cropView = new PhotoCropView(this, selectedImage, calendarAspectRatio);
+        String fileName = habit == null ? CALENDAR_BACKGROUND_FILE : habitBackgroundFile(habit.id);
         new AlertDialog.Builder(this)
-                .setTitle("Crop calendar background")
+                .setTitle(habit == null ? "Crop default background" : "Crop calendar picture")
                 .setView(paddedDialogView(cropView))
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Save", (dialog, which) -> {
                     Bitmap croppedImage = cropView.createCroppedBitmap(720, 828);
-                    if (croppedImage == null || !savePrivateBitmap(CALENDAR_BACKGROUND_FILE, croppedImage)) {
+                    if (croppedImage == null || !savePrivateBitmap(fileName, croppedImage)) {
                         if (croppedImage != null) {
                             croppedImage.recycle();
                         }
                         Toast.makeText(this, "Could not save that picture", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    calendarBackgroundBitmap = croppedImage;
-                    rebuildUiKeepingSettingsOpen();
+                    if (habit == null) {
+                        calendarBackgroundBitmap = croppedImage;
+                        rebuildUiKeepingSettingsOpen();
+                    } else {
+                        croppedImage.recycle();
+                        loadedHabitBackgroundId = null;
+                        renderCalendar();
+                    }
                 })
                 .show();
     }
@@ -2211,6 +2310,39 @@ public class MainActivity extends Activity {
         return photoFile.exists() ? BitmapFactory.decodeFile(photoFile.getAbsolutePath()) : null;
     }
 
+    private void applyCalendarBackground(Habit habit) {
+        if (!habit.id.equals(loadedHabitBackgroundId)) {
+            loadedHabitBackgroundId = habit.id;
+            loadedHabitBackground = loadPrivateBitmap(habitBackgroundFile(habit.id));
+        }
+        activeCalendarBackground = loadedHabitBackground != null ? loadedHabitBackground : calendarBackgroundBitmap;
+        boolean hasPicture = activeCalendarBackground != null;
+        if (calendarBackgroundImage != null) {
+            calendarBackgroundImage.setImageBitmap(activeCalendarBackground);
+            calendarBackgroundImage.setVisibility(hasPicture ? View.VISIBLE : View.GONE);
+            calendarBackgroundOverlay.setVisibility(hasPicture ? View.VISIBLE : View.GONE);
+        }
+        for (TextView label : weekdayLabels) {
+            label.setTextColor(hasPicture ? Color.WHITE : mutedTextColor());
+        }
+    }
+
+    private static String habitBackgroundFile(String habitId) {
+        return "calendar_background_" + habitId + ".webp";
+    }
+
+    private boolean hasOwnBackground(Habit habit) {
+        return getFileStreamPath(habitBackgroundFile(habit.id)).exists();
+    }
+
+    private void removeHabitBackground(Habit habit) {
+        deleteFile(habitBackgroundFile(habit.id));
+        if (habit.id.equals(loadedHabitBackgroundId)) {
+            loadedHabitBackgroundId = null;
+            loadedHabitBackground = null;
+        }
+    }
+
     private void removeCalendarBackground() {
         deleteFile(CALENDAR_BACKGROUND_FILE);
         calendarBackgroundBitmap = null;
@@ -2275,10 +2407,10 @@ public class MainActivity extends Activity {
             text = Color.WHITE;
         } else {
             int panel = panelColor();
-            background = calendarBackgroundBitmap == null
+            background = activeCalendarBackground == null
                     ? panel
                     : Color.argb(142, Color.red(panel), Color.green(panel), Color.blue(panel));
-            text = calendarBackgroundBitmap == null ? textColor() : Color.WHITE;
+            text = activeCalendarBackground == null ? textColor() : Color.WHITE;
         }
 
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
@@ -2295,7 +2427,7 @@ public class MainActivity extends Activity {
     private void applyFutureDayStyle(TextView view) {
         android.graphics.drawable.GradientDrawable drawable = new android.graphics.drawable.GradientDrawable();
         int panel = panelColor();
-        drawable.setColor(calendarBackgroundBitmap == null
+        drawable.setColor(activeCalendarBackground == null
                 ? panel
                 : Color.argb(128, Color.red(panel), Color.green(panel), Color.blue(panel)));
         drawable.setCornerRadius(dp(8));
@@ -2313,10 +2445,11 @@ public class MainActivity extends Activity {
         }
         new AlertDialog.Builder(this)
                 .setTitle("Delete habit?")
-                .setMessage(habit.name)
+                .setMessage(habitLabel(habit))
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Delete", (dialog, which) -> {
                     habits.remove(habit);
+                    removeHabitBackground(habit);
                     if (habit.id.equals(selectedHabitId)) {
                         selectedHabitId = habits.get(0).id;
                         prefs.edit().putString(SELECTED_HABIT_KEY, selectedHabitId).apply();
@@ -2665,6 +2798,7 @@ public class MainActivity extends Activity {
                         readHabitColors(item),
                         item.optJSONObject("states") == null ? new JSONObject() : item.optJSONObject("states"),
                         item.optJSONObject("notes") == null ? new JSONObject() : item.optJSONObject("notes"),
+                        item.optJSONObject("dateEmojis") == null ? new JSONObject() : item.optJSONObject("dateEmojis"),
                         parseHabitStartDate(item.optString("startDate", ""))
                 ));
             }
@@ -2690,6 +2824,7 @@ public class MainActivity extends Activity {
                 item.put("dateColors", dateColors);
                 item.put("states", habit.states);
                 item.put("notes", habit.notes);
+                item.put("dateEmojis", habit.dateEmojis);
                 if (habit.startDate != null) {
                     item.put("startDate", habit.startDate.toString());
                 }
@@ -2712,9 +2847,10 @@ public class MainActivity extends Activity {
         final List<Integer> dateColors;
         final JSONObject states;
         final JSONObject notes;
+        final JSONObject dateEmojis;
         LocalDate startDate;
 
-        Habit(String id, String name, String emoji, String type, List<Integer> dateColors, JSONObject states, JSONObject notes, LocalDate startDate) {
+        Habit(String id, String name, String emoji, String type, List<Integer> dateColors, JSONObject states, JSONObject notes, JSONObject dateEmojis, LocalDate startDate) {
             this.id = id;
             this.name = name;
             this.emoji = emoji;
@@ -2722,6 +2858,7 @@ public class MainActivity extends Activity {
             this.dateColors = dateColors;
             this.states = states;
             this.notes = notes;
+            this.dateEmojis = dateEmojis;
             this.startDate = startDate;
         }
     }
@@ -2880,7 +3017,9 @@ public class MainActivity extends Activity {
         private final Paint unselectedMarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint notePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private int unselectedMarkStyle = UNSELECTED_STYLE_BLANK;
+        private final Paint emojiPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private boolean hasNote;
+        private String dayEmoji = "";
         private Drawable startDateHat;
         private Drawable todayMarkerDrawable;
 
@@ -2888,6 +3027,7 @@ public class MainActivity extends Activity {
             super(context);
             unselectedMarkPaint.setStrokeWidth(dp(4));
             unselectedMarkPaint.setStrokeCap(Paint.Cap.ROUND);
+            emojiPaint.setTextAlign(Paint.Align.CENTER);
         }
 
         void setUnselectedDateStyle(int style) {
@@ -2905,6 +3045,11 @@ public class MainActivity extends Activity {
             invalidate();
         }
 
+        void setDayEmoji(String emoji) {
+            dayEmoji = emoji;
+            invalidate();
+        }
+
         void setTodayMarkerResource(int drawableResource) {
             todayMarkerDrawable = drawableResource == 0 ? null : getDrawable(drawableResource);
             invalidate();
@@ -2915,7 +3060,7 @@ public class MainActivity extends Activity {
             super.onDraw(canvas);
             drawTodayMarker(canvas);
             if (unselectedMarkStyle == UNSELECTED_STYLE_DIAGONAL) {
-                unselectedMarkPaint.setColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
+                unselectedMarkPaint.setColor(activeCalendarBackground == null ? mutedTextColor() : Color.WHITE);
                 canvas.drawLine(
                         getWidth() * 0.12f,
                         getHeight() * 0.84f,
@@ -2924,7 +3069,7 @@ public class MainActivity extends Activity {
                         unselectedMarkPaint
                 );
             } else if (unselectedMarkStyle == UNSELECTED_STYLE_HORIZONTAL) {
-                unselectedMarkPaint.setColor(calendarBackgroundBitmap == null ? mutedTextColor() : Color.WHITE);
+                unselectedMarkPaint.setColor(activeCalendarBackground == null ? mutedTextColor() : Color.WHITE);
                 canvas.drawLine(
                         getWidth() * 0.10f,
                         getHeight() * 0.50f,
@@ -2935,6 +3080,23 @@ public class MainActivity extends Activity {
             }
             drawStartDateHat(canvas);
             drawNoteIndicator(canvas);
+            drawDayEmoji(canvas);
+        }
+
+        private void drawDayEmoji(Canvas canvas) {
+            if (dayEmoji.isEmpty()) {
+                return;
+            }
+            // Shrink long marks to fit the tile width; past the minimum size they get clipped at the tile edge.
+            emojiPaint.setTextSize(dp(13));
+            float maxWidth = getWidth() - dp(4);
+            float textWidth = emojiPaint.measureText(dayEmoji);
+            if (textWidth > maxWidth) {
+                emojiPaint.setTextSize(Math.max(dp(8), dp(13) * maxWidth / textWidth));
+            }
+            emojiPaint.setColor(getCurrentTextColor());
+            float baseline = getHeight() - dp(3) - emojiPaint.descent();
+            canvas.drawText(dayEmoji, getWidth() / 2f, baseline, emojiPaint);
         }
 
         private void drawTodayMarker(Canvas canvas) {

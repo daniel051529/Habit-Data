@@ -5,5 +5,13 @@
         <item name="android:statusBarColor">#F8FAFC</item>
         <item name="android:navigationBarColor">#FFFFFF</item>
         <item name="android:colorAccent">#0F766E</item>
+        <item name="android:alertDialogTheme">@style/AppDialogTheme</item>
+        <item name="android:datePickerDialogTheme">@style/AppDialogTheme</item>
+        <item name="android:timePickerDialogTheme">@style/AppDialogTheme</item>
+    </style>
+
+    <style name="AppDialogTheme" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">#0F766E</item>
+        <item name="android:windowBackground">@drawable/dialog_rounded_background</item>
     </style>
 </resources>
