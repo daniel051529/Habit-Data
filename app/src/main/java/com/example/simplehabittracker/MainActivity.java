@@ -22,6 +22,7 @@ import android.os.Handler;
 import android.os.Bundle;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -53,6 +54,7 @@ import java.time.LocalTime;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.io.File;
+import java.math.BigDecimal;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -62,6 +64,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String PREFS_NAME = "habit_tracker_data";
@@ -80,6 +84,16 @@ public class MainActivity extends Activity {
     private static final String CALENDAR_BACKGROUND_FILE = "calendar_background.webp";
     private static final int PICK_CALENDAR_BACKGROUND_REQUEST = 4103;
     private static final int PICK_HABIT_BACKGROUND_REQUEST = 4104;
+    private static final String SUM_NONE = "none";
+    private static final String SUM_MARKS = "marks";
+    private static final String SUM_NOTES = "notes";
+    private static final String SUM_BOTH = "both";
+    private static final String[] SUM_MODES = {SUM_NONE, SUM_MARKS, SUM_NOTES, SUM_BOTH};
+    private static final String[] SUM_MODE_NAMES = {"Normal", "Sum marks", "Sum notes", "Sum marks and notes"};
+    // Whole numbers, decimals, 1,000-style groups and a leading minus; the minus only counts
+    // when it isn't joining two words or numbers, so "3-4" reads as 3 and 4.
+    private static final Pattern NUMBER_PATTERN =
+            Pattern.compile("(?<![\\w.])-?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?");
     private static final int DEFAULT_SLEEP_TIME_MINUTES = 23 * 60;
     private static final String HABIT_TYPE_GOOD = "good";
     private static final String HABIT_TYPE_BAD = "bad";
@@ -876,7 +890,9 @@ public class MainActivity extends Activity {
             params.width = 0;
             params.height = dp(52);
             params.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-            params.rowSpec = GridLayout.spec(GridLayout.UNDEFINED);
+            // FILL instead of the default baseline alignment, so a cell whose text sits
+            // lower (like the sum) can't stretch its row past the calendar's height.
+            params.rowSpec = GridLayout.spec(GridLayout.UNDEFINED, GridLayout.FILL);
             params.setMargins(dp(4), dp(4), dp(4), dp(4));
 
             if (dayNumber >= 1 && dayNumber <= daysInMonth) {
@@ -919,6 +935,8 @@ public class MainActivity extends Activity {
                         return true;
                     });
                 }
+            } else if (cell == totalCells - 1 && !SUM_NONE.equals(habit.sumMode)) {
+                applySumCellStyle(dayView, monthSum(habit, month));
             } else {
                 dayView.setText("");
                 dayView.setBackgroundColor(Color.TRANSPARENT);
@@ -926,6 +944,74 @@ public class MainActivity extends Activity {
 
             grid.addView(dayView, params);
         }
+    }
+
+    private void applySumCellStyle(TextView view, BigDecimal sum) {
+        view.setText("\u03A3 " + formatSum(sum));
+        view.setGravity(Gravity.END | Gravity.BOTTOM);
+        view.setTextColor(activeCalendarBackground == null ? textColor() : Color.WHITE);
+        view.setBackgroundColor(Color.TRANSPARENT);
+        view.setPadding(0, 0, dp(2), dp(2));
+        view.setMaxLines(1);
+        // Long totals shrink to fit the cell instead of being cut off.
+        view.setAutoSizeTextTypeUniformWithConfiguration(8, 16, 1, TypedValue.COMPLEX_UNIT_SP);
+    }
+
+    private BigDecimal monthSum(Habit habit, YearMonth month) {
+        boolean sumMarks = SUM_MARKS.equals(habit.sumMode) || SUM_BOTH.equals(habit.sumMode);
+        boolean sumNotes = SUM_NOTES.equals(habit.sumMode) || SUM_BOTH.equals(habit.sumMode);
+        BigDecimal total = BigDecimal.ZERO;
+        for (int day = 1; day <= month.lengthOfMonth(); day++) {
+            String dateKey = month.atDay(day).toString();
+            if (sumMarks) {
+                total = total.add(sumNumbers(habit.dateEmojis.optString(dateKey, "")));
+            }
+            if (sumNotes) {
+                total = total.add(sumNumbers(habit.notes.optString(dateKey, "")));
+            }
+        }
+        return total;
+    }
+
+    private static BigDecimal sumNumbers(String text) {
+        BigDecimal total = BigDecimal.ZERO;
+        Matcher matcher = NUMBER_PATTERN.matcher(text);
+        while (matcher.find()) {
+            total = total.add(new BigDecimal(matcher.group().replace(",", "")));
+        }
+        return total;
+    }
+
+    private static String formatSum(BigDecimal sum) {
+        return sum.signum() == 0 ? "0" : sum.stripTrailingZeros().toPlainString();
+    }
+
+    private static String normalizedSumMode(String mode) {
+        for (String known : SUM_MODES) {
+            if (known.equals(mode)) {
+                return known;
+            }
+        }
+        return SUM_NONE;
+    }
+
+    private void showCalendarTypeDialog(Habit habit) {
+        int checked = 0;
+        for (int index = 0; index < SUM_MODES.length; index++) {
+            if (SUM_MODES[index].equals(habit.sumMode)) {
+                checked = index;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Calendar type")
+                .setSingleChoiceItems(SUM_MODE_NAMES, checked, (dialog, which) -> {
+                    habit.sumMode = SUM_MODES[which];
+                    saveHabits();
+                    renderCalendar();
+                    dialog.dismiss();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void showDateNoteDialog(Habit habit, String dateKey) {
@@ -1553,6 +1639,7 @@ public class MainActivity extends Activity {
             menu.getMenu().add("Move down");
         }
         menu.getMenu().add("Select color");
+        menu.getMenu().add("Calendar type");
         boolean hasOwnBackground = hasOwnBackground(habit);
         menu.getMenu().add(hasOwnBackground ? "Replace calendar picture" : "Choose calendar picture");
         if (hasOwnBackground) {
@@ -1577,6 +1664,8 @@ public class MainActivity extends Activity {
                 moveHabitWithinFolder(habit, 1);
             } else if ("Select color".equals(title)) {
                 showHabitColorDialog(habit);
+            } else if ("Calendar type".equals(title)) {
+                showCalendarTypeDialog(habit);
             } else if ("Choose calendar picture".equals(title) || "Replace calendar picture".equals(title)) {
                 pendingBackgroundHabitId = habit.id;
                 openImagePicker(PICK_HABIT_BACKGROUND_REQUEST);
@@ -2801,6 +2890,7 @@ public class MainActivity extends Activity {
                         item.optJSONObject("dateEmojis") == null ? new JSONObject() : item.optJSONObject("dateEmojis"),
                         parseHabitStartDate(item.optString("startDate", ""))
                 ));
+                habits.get(habits.size() - 1).sumMode = normalizedSumMode(item.optString("sumMode", SUM_NONE));
             }
         } catch (JSONException ignored) {
             habits.clear();
@@ -2825,6 +2915,7 @@ public class MainActivity extends Activity {
                 item.put("states", habit.states);
                 item.put("notes", habit.notes);
                 item.put("dateEmojis", habit.dateEmojis);
+                item.put("sumMode", habit.sumMode);
                 if (habit.startDate != null) {
                     item.put("startDate", habit.startDate.toString());
                 }
@@ -2849,6 +2940,7 @@ public class MainActivity extends Activity {
         final JSONObject notes;
         final JSONObject dateEmojis;
         LocalDate startDate;
+        String sumMode = SUM_NONE;
 
         Habit(String id, String name, String emoji, String type, List<Integer> dateColors, JSONObject states, JSONObject notes, JSONObject dateEmojis, LocalDate startDate) {
             this.id = id;
